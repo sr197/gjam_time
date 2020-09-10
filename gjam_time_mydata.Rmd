@@ -1492,14 +1492,15 @@ save(outputRB_4, file='gjamOutputXRA_4/output.rdata')
 
 
 
-I have found that some fish have a really high population growth rate (some were even 1). SO I am going to try widening that prior a bit more. 
+I have found that some fish have a really high population growth rate (some were even 1). SO I am going to try widening that prior a bit more.
+just ran this one -9/6
 
 ```{r}
 #set priors
 
 # effect on species growth.
 
-rhoPrior <- list(lo = list(intercept = -1, SST = -2, NAOJFM = -2, AMOyear = -2), hi = list(intercept = 1,SST = 2, NAOJFM = 2, AMOyear = 2) )
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2) )
 
 
 #effect on e/imigration
@@ -1523,7 +1524,7 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 10 ] <- 10
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 1000, burnin = 500,  
+modelList <- list(typeNames = 'CA', ng = 10000, burnin = 1000,  
            timeList = timeList, effort = effort) 
 
 #output
@@ -1532,7 +1533,7 @@ outputRB_5 <- gjam(~  depth + SEDSIZE + SSAL, xdata=xdata, ydata=ydata, modelLis
 plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T,
                  outFolder = 'gjamOutputXRA_5')
 gjamPlot(outputRB_5, plotPars)
-save(outputRB_4, file='gjamOutputXRA_5/output.rdata')
+save(outputRB_5, file='gjamOutputXRA_5/output.rdata')
 
 ```
 
@@ -1604,14 +1605,14 @@ timeList <- mergeList(tlist, tmp)
 
 #set limits on alpha priors
 lo <- timeList$alphaPrior$lo
-lo[lo < -4] <- -4
+lo[lo < -10] <- -10
 timeList$alphaPrior$lo <- lo 
 
 hi <- timeList$alphaPrior$hi
-hi[hi > 4 ] <- 4
+hi[hi > 10 ] <- 10
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 1000, burnin = 500,  
+modelList <- list(typeNames = 'CA', ng = 10000, burnin = 1000,  
            timeList = timeList, effort = effort) 
 
 #output
@@ -1797,17 +1798,90 @@ save(outputRB_7, file='gjamOutputXRA_7/output.rdata')
 
 ```
 #plotting 
+##color coded by order 
+```{r}
 
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_order <- spp_class %>% dplyr::select(COMNAME, order, order_common)
+spp_order$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_order$COMNAME)
+spp_order_sel <- spp_order[spp_order$COMNAME %in% specnames_2,]
+
+Sharks <- subset(spp_order_sel, spp_order_sel$order_common == "angel sharks" | spp_order_sel$order_common == "ground sharks"| spp_order_sel$order_common == "ground sharks "| spp_order_sel$order_common == "squaliformes")
+
+Rays <- subset(spp_order_sel, spp_order_sel$order_common == "electric rays" | spp_order_sel$order_common == "rays")
+
+Squid_Oct <- subset(spp_order_sel, spp_order_sel$order_common == "cephalopod" | spp_order_sel$order_common == "squid"| spp_order_sel$order_common == "octopoda")
+
+Decapods <- subset(spp_order_sel, spp_order_sel$order_common == "decapods"| spp_order_sel$order_common == "horseshoe crab")
+
+Flatfishes <- subset(spp_order_sel, spp_order_sel$order_common == "flatfishes")
+
+Cods <- subset(spp_order_sel, spp_order_sel$order_common == "cods and allies")
+
+Small_pelagic <- subset(spp_order_sel, spp_order_sel$order_common == "herrings and anchovys "| spp_order_sel$order_common == "mackerels"| spp_order_sel$order_common == "dories "| spp_order_sel$order_common == "smelts")
+
+Perch_like <- subset(spp_order_sel, spp_order_sel$order_common == "perch like"| spp_order_sel$order_common == "perch like ")
+
+Mollusk_bivalve <- subset(spp_order_sel, spp_order_sel$order_common == "mollusks and bivalves")
+
+Other_demersal_fish <- subset(spp_order_sel, spp_order_sel$order_common == "anglerfishes"| spp_order_sel$order_common == "beardfishes"| spp_order_sel$order_common == "grinners"| spp_order_sel$order_common == "hagfishes"| spp_order_sel$order_common == "lanternfish"| spp_order_sel$order_common == "pipefishes and seahorses"| spp_order_sel$order_common == "tetraodontiformes"| spp_order_sel$order_common == "scorpionfishes and flatheads")
+
+Eels <- subset(spp_order_sel, spp_order_sel$order_common == "cusk eels"| spp_order_sel$order_common == "eels and morays ")
+
+
+specGroups <- list(
+  Sharks = c(as.vector(Sharks$COMNAME)), 
+  Rays = c(as.vector(Rays$COMNAME)),
+  Squid_Oct = c(as.vector(Squid_Oct$COMNAME)),
+  Decapods = c(as.vector(Decapods$COMNAME)),
+  Flatfishes = c(as.vector(Flatfishes$COMNAME)),   
+  Cods = c(as.vector(Cods$COMNAME)),
+  Small_pelagic = c(as.vector(Small_pelagic$COMNAME)),
+  Perch_like = c(as.vector(Perch_like$COMNAME)),
+  Mollusk_bivalve = c(as.vector(Mollusk_bivalve$COMNAME)),
+  Other_demersal_fish = c(as.vector(Other_demersal_fish$COMNAME)),
+  Eels = c(as.vector(Eels$COMNAME))
+)
+
+s <- ncol(ydata)
+specColor <- rep('black', s)
+snames <- colnames(ydata)
+names(specColor) = snames
+
+cc <- c("#006ba4", "#395E87",  "#ababab", "#595959", "#ff800e", "#c85200", "#8ab8e3", "#ffbc79", "#898989",  "#873f0e", "black")
+
+for(j in 1:length(specGroups)){
+  wj <- which(snames %in% specGroups[[j]])
+  specColor[wj] <- cc[j]
+  names(specColor)[wj] <- names(specGroups)[j]
+}
+
+specs <- cbind(specColor, specnames_2)
+
+
+specColor = specColor 
+#load('gjamOutputXRA_2/output.rdata')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T,specColor = specColor,
+                 outFolder = 'gjamOutputXRA_2')
+gjamPlot(outputRB_3, plotPars)
+
+
+plot(NULL ,xaxt='n',yaxt='n',bty='n',ylab='',xlab='', xlim=0:1, ylim=0:1)
+legend("topleft", legend =c("Sharks", "Rays", "Squids and Oct", "Decapods", "Flatfishes", "Cods", "Small pelagics", "Perch like", "Mollusks and bivalves", "Other demersal fish", "Eels"), pch=16, pt.cex=2.5, cex=1.2, bty='n',
+    col = c("#006ba4", "#395E87",  "#ababab", "#595959", "#ff800e", "#c85200", "#8ab8e3", "#ffbc79", "#898989",  "#873f0e", "black"))
+mtext("Species", at=0.2, cex=2)
+```
+###bar plot
 ```{r}
 sensMu <- sensSe <- numeric(0)
     acol <- colF(3)
     scol <- character(0)
     
-sensSe <- outputRB_7[["parameters"]][["sensSe"]]
-sigMu <- outputRB_7[["parameters"]][["sigMu"]]
-sensAlpha <- outputRB_7[["parameters"]][["sensAlpha"]]
-sensRho <- outputRB_7[["parameters"]][["sensRho"]]
-sensBeta <- outputRB_7[["parameters"]][["sensBeta"]]
+sensSe <- outputRB_3[["parameters"]][["sensSe"]]
+sigMu <- outputRB_3[["parameters"]][["sigMu"]]
+sensAlpha <- outputRB_3[["parameters"]][["sensAlpha"]]
+sensRho <- outputRB_3[["parameters"]][["sensRho"]]
+sensBeta <- outputRB_3[["parameters"]][["sensBeta"]]
 
 sensMu <- cbind(sensMu, sensAlpha[,1])
 sensSe <- cbind(sensSe, sensAlpha[,1])
@@ -1823,6 +1897,8 @@ sensMu <- cbind(sensMu, sensBeta[,1])
 sensSe <- cbind(sensSe, sensBeta[,1])
 colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'beta'
 scol <- c(scol, acol[3])
+
+ 
       
       nc <- ncol(sensMu)
  
@@ -1844,13 +1920,23 @@ scol <- c(scol, acol[3])
         
         smu <- t(sprop[ord,])
         smu <- smu[1:(nrow(smu)-1),]
+        #get coloring right 
+    smu2 <- t(smu)  
+    smu2 <- as.data.frame(smu2) 
+    smu2$specnames_2 <- rownames(smu2)
+    specs <- as.data.frame(specs)
+    smu2 <- left_join(smu2, specs, by = c("specnames_2"))
+    
+    smu3 <- t(smu2)
+    colnames(smu3) <- smu2$specnames_2
         smax <- max( colSums(smu) )
         tmp0 <- barplot( smu, beside = F, col = .getColor(scol, .4), border = scol, xaxt = 'n',
                         ylim = c(-.5, smax), ylab = 'Proportion of total variance' )
         tmp0
-        text( tmp0 - .2*diff(tmp0)[1], -.1, colnames(smu), srt = 90, pos = 1, cex=.5)
+        text( tmp0 - .2*diff(tmp0)[1], -.1, colnames(smu), srt = 90, pos = 1, cex=.6, col = as.vector(smu2$specColor))
       
-      
+      legend("topright", legend =c("Sharks", "Rays", "Squids and Oct", "Decapods", "Flatfishes", "Cods", "Small pelagics", "Perch like", "Mollusks and bivalves", "Other demersal fish", "Eels"), pch=16, pt.cex=1, cex=.6, bty='n',
+    col = c("#006ba4", "#395E87",  "#ababab", "#595959", "#ff800e", "#c85200", "#8ab8e3", "#ffbc79", "#898989",  "#873f0e", "black"))
      
       if(nc == 1)text( tmp[1,], 1.05*apply(smu + sse, 2, max), colnames(smu), srt = 75, pos = 4,
                        cex = .3)
@@ -1865,12 +1951,81 @@ scol <- c(scol, acol[3])
       sensMu <- sensSe <- numeric(0)
     acol <- colF(3)
     scol <- character(0)
+  
     
-sensSe <- outputRB_8[["parameters"]][["sensSe"]]
-sigMu <- outputRB_8[["parameters"]][["sigMu"]]
-sensAlpha <- outputRB_8[["parameters"]][["sensAlpha"]]
-sensRho <- outputRB_8[["parameters"]][["sensRho"]]
-sensBeta <- outputRB_8[["parameters"]][["sensBeta"]]
+ 
+```
+
+##by overfishing status 
+
+
+```{r}
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_status <- spp_class %>% dplyr::select(COMNAME, stock_status)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_order$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_2,]
+
+Unknown <- subset(spp_order_sel, spp_order_sel$stock_status == "unknown")
+
+Stable <- subset(spp_order_sel, spp_order_sel$stock_status == "stable ")
+
+Declining <- subset(spp_order_sel, spp_order_sel$stock_status == "declining ")
+
+Depleted <- subset(spp_order_sel, spp_order_sel$stock_status == "depleted ")
+
+Rebuilt <- subset(spp_order_sel, spp_order_sel$stock_status == "rebuilt")
+
+specGroups <- list(
+  Unknown = c(as.vector(Unknown$COMNAME)), 
+  Stable = c(as.vector(Stable$COMNAME)),
+  Rebuilt = c(as.vector(Rebuilt$COMNAME)),
+  Declining = c(as.vector(Declining$COMNAME)),
+  Depleted = c(as.vector(Depleted$COMNAME))
+)
+
+s <- ncol(ydata)
+specColor <- rep('black', s)
+snames <- colnames(ydata)
+names(specColor) = snames
+
+cc <- c("#ababab", "#006ba4", "#8ab8e3", "#ffbc79","#ff800e")
+
+for(j in 1:length(specGroups)){
+  wj <- which(snames %in% specGroups[[j]])
+  specColor[wj] <- cc[j]
+  names(specColor)[wj] <- names(specGroups)[j]
+}
+
+specs <- cbind(specColor, specnames_2)
+
+
+specColor = specColor 
+load('gjamOutputXRA_2/output.rdata')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = F, SMALLPLOTS = T, GRIDPLOTS = T,specColor = specColor,
+                 outFolder = 'gjamOutputXRA_2')
+gjamPlot(outputRB_5, plotPars)
+
+
+plot(NULL ,xaxt='n',yaxt='n',bty='n',ylab='',xlab='', xlim=0:1, ylim=0:1)
+legend("topleft", legend =c("Unknown", "Stable", "Rebuilt", "Declining", "Depleted"), pch=16, pt.cex=2.5, cex=1.2, bty='n',
+    col = c("#ababab", "#006ba4", "#8ab8e3", "#ffbc79","#ff800e"))
+mtext("Species", at=0.2, cex=2)
+```
+
+
+
+###bar plot
+
+```{r}
+sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+    
+sensSe <- outputRB_3[["parameters"]][["sensSe"]]
+sigMu <- outputRB_3[["parameters"]][["sigMu"]]
+sensAlpha <- outputRB_3[["parameters"]][["sensAlpha"]]
+sensRho <- outputRB_3[["parameters"]][["sensRho"]]
+sensBeta <- outputRB_3[["parameters"]][["sensBeta"]]
 
 sensMu <- cbind(sensMu, sensAlpha[,1])
 sensSe <- cbind(sensSe, sensAlpha[,1])
@@ -1886,6 +2041,8 @@ sensMu <- cbind(sensMu, sensBeta[,1])
 sensSe <- cbind(sensSe, sensBeta[,1])
 colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'beta'
 scol <- c(scol, acol[3])
+
+ 
       
       nc <- ncol(sensMu)
  
@@ -1907,13 +2064,22 @@ scol <- c(scol, acol[3])
         
         smu <- t(sprop[ord,])
         smu <- smu[1:(nrow(smu)-1),]
+        #get coloring right 
+    smu2 <- t(smu)  
+    smu2 <- as.data.frame(smu2) 
+    smu2$specnames_2 <- rownames(smu2)
+    specs <- as.data.frame(specs)
+    smu2 <- left_join(smu2, specs, by = c("specnames_2"))
+    
+    smu3 <- t(smu2)
+    colnames(smu3) <- smu2$specnames_2
         smax <- max( colSums(smu) )
-        tmp1 <- barplot( smu, beside = F, col = .getColor(scol, .4), border = scol, xaxt = 'n',
+        tmp0 <- barplot( smu, beside = F, col = .getColor(scol, .4), border = scol, xaxt = 'n',
                         ylim = c(-.5, smax), ylab = 'Proportion of total variance' )
-        tmp1
-        text( tmp1 - .2*diff(tmp1)[1], -.1, colnames(smu), srt = 90, pos = 1, cex=.5)
+        tmp0
+        text( tmp0 - .2*diff(tmp0)[1], -.1, colnames(smu), srt = 90, pos = 1, cex=.6, col = as.vector(smu2$specColor))
       
-      
+      legend("topright", legend =c("Unknown", "Stable", "Rebuilt", "Declining", "Depleted") , pch=16, pt.cex=1, cex=.6, bty='n', col = c("#ababab", "#006ba4", "#8ab8e3", "#ffbc79","#ff800e"))
      
       if(nc == 1)text( tmp[1,], 1.05*apply(smu + sse, 2, max), colnames(smu), srt = 75, pos = 4,
                        cex = .3)
@@ -1924,6 +2090,13 @@ scol <- c(scol, acol[3])
       mtext( 'DI growth', side = 1, outer = T, line = -2, adj = .5,
              col = scol[2])
       
+      
+      sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+  
+    
+ 
 ```
 
 
