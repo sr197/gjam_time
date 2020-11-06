@@ -1,0 +1,2609 @@
+---
+title: "Untitled"
+author: "Sarah Roberts"
+date: "9/23/2020"
+output: html_document
+---
+
+run utilities in gjamTimeExample-master. May need to install gjam and run gjam functions as well. but try just running utilities. Note, its best to go in to the folder, run utilities, then open gjamTime.r and run the first few lines until source(utlities.R)
+```{r, echo = F, eval = F}
+install.packages('gjam_2.3.tar.gz',repos=NULL, type='source')
+library(gjam) #it has been working with 2.3.2 but the predictions are weird 
+
+message('loading local clark files...')
+clark <- 'gjamTimeExample-master/clarkFiles/'
+files <- list.files(clark)
+cat('   ')
+message(paste(files, collapse=", "))
+for (f in files) {
+  path <- file.path(clark, f)
+  if (grepl('.R', toupper(f))) source(path)
+  else Rcpp::sourceCpp(path)
+}
+
+library(MASS)
+library(dplyr)
+```
+#visualize food web 
+
+run this first 
+```{r}
+foodWebDiagram <- function(S, guildList = NULL, predPrey = NULL, zeroAlpha = NULL,
+                           intraComp = 1:S, label = NULL, PLOT = TRUE, layout = 'rr'){
+  
+  # S - no. species
+  # default interaction is negative, arrows only for negative interactions
+  # guildList - overrides default, only members of the same guild compete
+  # predPrey  - matrix with 2 columns, second column is prey of first column
+  # zeroAlpha - matrix with 2 columns, second column does not affect first column
+  # intraComp - needed for intraspecific comp if guildList is specified
+  # layout can be 'tree', 'rr', ...
+  
+  require( DiagrammeR )
+  
+  pp <- numeric(0)
+  
+  #fromTo <- as.matrix( expand.grid( c(1:S), c(1:S) ) )
+  #ft <- .pasteCols( fromTo )
+
+  fromTo <- expand.grid(spec2,spec2)  #I changed this
+  ft <- .pasteCols( fromTo )#I changed this
+  qq <- numeric(0)
+  if( !is.null(guildList) ){
+    
+    fromTo <- numeric(0)
+    for(k in 1:length(guildList)){
+      ft <- as.matrix(expand.grid(guildList[[k]], guildList[[k]]))
+      fromTo <- rbind(fromTo, ft)
+    }
+    if(!is.null(intraComp)){
+      ft <- cbind(1:S, 1:S)
+      fromTo <- rbind(fromTo, ft)
+    }
+    ft <- .pasteCols( fromTo )
+    ww <- which(!duplicated(ft))
+    ft <- ft[ww]
+    fromTo <- fromTo[ww,]
+    zeroAlpha <- NULL
+  }
+  
+  if(!is.null(predPrey)){
+    pp <- .pasteCols( predPrey[drop=F,,c(2,1)] )
+    qq <- .pasteCols( predPrey)
+    #   fromTo <- fromTo[ !ft %in% pp, ]
+    fromTo <- rbind(fromTo, predPrey, predPrey[drop=F,,c(2,1)])
+    ft <- .pasteCols( fromTo )
+    ww <- which(!duplicated(ft))
+    fromTo <- fromTo[ww,]
+    ft <- ft[ww]
+  }
+  
+  if(!is.null(zeroAlpha)){
+    za <- .pasteCols( zeroAlpha[drop=F,,c(1,2)])
+    
+    fromTo <- fromTo[ !ft %in% za, ]
+    ft <- ft[ !ft %in% za ]
+  }
+  
+  if( length(qq) > 0 ){
+    ft <- .pasteCols( fromTo )
+    fromTo <- rbind( fromTo[ft %in% qq,], fromTo[!ft %in% qq, ] )
+  }
+  ft <- .pasteCols( fromTo )
+  pp <- pp[ pp %in% ft ]
+  
+  if(!PLOT){
+    return( fromTo )
+  }else{
+    ecol  <- rep( mycol, length(ft) )
+    #  ncol  <- rep( 'tan', S )
+    ncol  <- colF(S)
+    shape <- rep( 'rectangle', S)
+    
+    if( length(qq) > 0 ){
+      
+      wt <- which( ft %in% qq )
+      ecol[ wt ] <- 'brown'
+      
+    }
+    if( length(pp) > 0 ){
+      
+      wt <- which( ft %in% pp )
+      ecol[ wt ] <- mycol
+    }
+    
+    if( is.null(layout) )layout <- "tree"
+    if(is.null(label))label <- paste('s', 1:S, sep='')
+    nodes <- create_node_df(n = S, label = label, style = "filled", color = ncol, shape = shape, height = .2, width = .3, fontsize = 3, penwidth=1, peripheries=1)
+    edges <- create_edge_df(from = fromTo[,1], to = fromTo[,2], color = ecol, arrowsize = .25, penwidth = .5 )
+    graph <- create_graph(nodes_df = nodes, edges_df = edges)
+    render_graph( graph,  layout = layout)
+  }
+}
+
+t_col <- function(color, percent = 50, name = NULL) {
+  #      color = color name
+  #    percent = % transparency
+  #       name = an optional name for the color
+
+## Get RGB values for named color
+rgb.val <- col2rgb(color)
+
+## Make new color using input color as base and alpha set by transparency
+t.col <- rgb(rgb.val[1], rgb.val[2], rgb.val[3],
+             max = 255,
+             alpha = (100 - percent) * 255 / 100,
+             names = name)
+
+## Save the color
+invisible(t.col)
+}
+mycol <- t_col("pink", perc = 99, name = "lt.pink")
+```
+
+```{r}
+PredPrey <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/PredPrey.csv")
+predPrey  <- PredPrey[1:2]   # second position is prey of first 
+colnames(predPrey) <- c("V1", "V2")
+#remove columns that prey on themselves
+predPrey$V1 <- as.character(predPrey$V1)
+predPrey$V2 <- as.character(predPrey$V2)
+
+predPrey <- predPrey[predPrey$V1 !=predPrey$V2,]
+predPrey$comb_effect <-  paste(predPrey$V1, predPrey$V2, sep = "-")
+
+
+#zero alpha 
+#first get unique combinations of all the species 
+spp_selected <- read.csv("spp_by_year_selected.csv")
+unique_spec <- expand.grid(spp_selected$SCINAME,spp_selected$SCINAME)
+unique_spec$comb_noeffect <- paste(unique_spec$Var1, unique_spec$Var2, sep = "-")
+unique_spec$comb_noeffect2 <- paste(unique_spec$Var2, unique_spec$Var1, sep = "-")
+
+'%ni%' <- Negate('%in%')
+no_effect <- subset(unique_spec, !(unique_spec$comb_noeffect %in% predPrey$comb_effect))
+no_effect2 <- subset(no_effect, !(no_effect$comb_noeffect2 %in% predPrey$comb_effect))
+
+  
+no_effect2$Var1 <- as.character(no_effect2$Var1)
+no_effect2$Var2 <- as.character(no_effect2$Var2)
+
+no_effect <- no_effect2[no_effect2$Var1 !=no_effect2$Var2,]
+no_uni <- no_effect %>%
+ group_by(grp = paste0(pmin(Var1, Var2), pmax(Var1, Var2))) %>%
+ slice(1) %>%
+ ungroup()
+
+zeroAlpha <- no_uni[1:2]
+colnames(zeroAlpha) <- c("Var1", "Var2")
+
+library(DiagrammeR)
+S <- 185
+predPrey <- predPrey[1:2]
+colnames(predPrey) <- c("Var1", "Var2")
+
+#just get out the ones we are modeling
+predPrey$Var1 <- gsub(pattern = " ", replacement = ".", x = predPrey$Var1)
+predPrey$Var2 <- gsub(pattern = " ", replacement = ".", x = predPrey$Var2)
+
+predPrey <- predPrey[predPrey$Var1 %in% specnames,]
+predPrey <- predPrey[predPrey$Var2 %in% specnames,]
+
+zeroAlpha$Var1 <- gsub(pattern = " ", replacement = ".", x = zeroAlpha$Var1)
+zeroAlpha$Var2 <- gsub(pattern = " ", replacement = ".", x = zeroAlpha$Var2)
+
+zeroAlpha <- zeroAlpha[zeroAlpha$Var1 %in% specnames,]
+zeroAlpha <- zeroAlpha[zeroAlpha$Var2 %in% specnames,]
+
+
+
+
+#get just the species with pred prey interactions 
+spec2 <- unique(unlist(predPrey))
+zeroAlpha1 <- zeroAlpha[zeroAlpha$Var1 %in% spec2,]
+zeroAlpha1 <- zeroAlpha1[zeroAlpha1$Var2 %in% spec2,]
+
+spec4 <- as.data.frame(spec2)
+spec4$SCINAME <- spec4$spec2
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+
+spec5 <- left_join(spec4, spp_selected_2, by = "SCINAME")
+spec5 <- as.vector(spec5$COMNAME)
+
+spec3 <- gsub(pattern = ' ', replacement = "\n", x = spec5)
+
+
+
+S = 63 #number in spec3
+foodWebDiagram(S, predPrey = predPrey,zeroAlpha = zeroAlpha1, label = spec3, PLOT = TRUE, layout = 'rxr')
+
+
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+
+
+pred <- predPrey %>% group_by(Var1) %>% count()
+pred <- left_join(pred, spp_selected_2, by = c("Var1" = "SCINAME"))
+
+
+prey <- predPrey %>% group_by(Var2) %>% count()
+prey <- left_join(prey, spp_selected_2, by = c("Var2" = "SCINAME"))
+
+```
+
+#setup
+##Fix NAs 
+I went through (code in Fill_Missing_xdata) and added oisst monthly sst data and world ocean atlas salinity data. 
+SST
+  1. sst in situ 
+  2. sst in situ average for that month and year and stratum 
+  3. oisst data (monthly)
+salinity 
+  1. in situ 
+  2. world ocean atlas 1985-1994 climatological data (only added for those years, as they were the ones mainly missing)
+#somehow I need to get rid of nas 
+
+```{r}
+xdata_new <- read.csv("xdata_added_climatology.csv")
+
+#select out what we are interested in 
+
+xdata_new <- xdata_new %>% dplyr::select(depth, SEDIMENT, groups, times, year.x, month.x, NAOJFM.y, AMOyear.y, oisst_full, SSAL_woa_insit, chla)
+
+#there were a lot of NAs in the climate data so I want to try adding back the NAO and AMO values. 
+
+
+
+```
+
+##adding in chlorophyll
+
+
+
+
+##ydata
+
+###tidy abundance (just adults)
+```{r}
+sumna <- function(x){
+  #acts like sum(na.rm=T) but returns NA if all are NA
+  if(!all(is.na(x))) return(sum(x, na.rm=T))
+  if(all(is.na(x))) return(NA)
+}
+
+
+```
+
+```{r}
+# Compile NEUS ===========================================================
+print("Compile NEUS")
+
+load("neus_Survdat.RData")
+load("neus_SVSPP.RData")
+
+#only get out adults
+survdat <- survdat %>% filter(LENGTH >=10) #obviously not all adult fish are mature at 10 cm but lets try it. 
+
+neus_survdat <- survdat %>% 
+  # select specific columns
+  select(CRUISE6, STATION, STRATUM, SVSPP, CATCHSEX, SVVESSEL, YEAR, SEASON, EST_TOWDATE, LAT, LON, DEPTH, SURFTEMP, SURFSALIN, BOTTEMP, BOTSALIN, ABUNDANCE, BIOMASS) %>% 
+  # remove duplicates
+  distinct() %>% 
+  mutate(SVVESSEL = as.character(SVVESSEL), 
+         SEASON = as.character(SEASON))
+
+# sum different sexes of same spp together
+#okay so now we know that the biomass column was given to them as the calibrated cpue
+neus_survdat <- neus_survdat %>% 
+  group_by(YEAR, SEASON, EST_TOWDATE, LAT, LON, DEPTH, CRUISE6, STATION, STRATUM, SVSPP) %>% 
+  summarise(wtcpue = sum(BIOMASS), abd = sum(ABUNDANCE)) 
+
+
+# repeat for spp file 
+neus_spp <- spp %>%
+  # remove some columns from spp data
+  select(-ITISSPP, -COMNAME, -AUTHOR) %>% 
+  mutate(SCINAME = as.character(SCINAME))
+
+files <- as.list(dir(pattern = "neus_strata", path = "data_raw", full.names = T))
+
+neus_strata <- read_csv("neus_strata.csv", col_types = cols(
+  STRGRP_DESC = col_character(),
+  STRATUM = col_double(),
+  STRATUM_NAME = col_character(),
+  STRATUM_AREA = col_double(),
+  MIDLAT = col_double(),
+  MIDLON = col_double(),
+  MINLAT = col_double(),
+  MAXLAT = col_double(),
+  MINLON = col_double(),
+  MAXLON = col_double()
+)) %>% 
+  select(STRATUM, STRATUM_AREA) %>% 
+  distinct()
+
+neus <- left_join(neus_survdat, neus_spp, by = "SVSPP") %>%
+  left_join(neus_strata, by = "STRATUM")
+
+# are there any strata in the data that are not in the strata file?
+# stopifnot(nrow(filter(neus, is.na(STRATUM_AREA))) == 0)
+
+neus <- neus %>%
+  mutate(
+    # Create a unique haulid
+    haulid = paste(formatC(CRUISE6, width=6, flag=0), formatC(STATION, width=3, flag=0), formatC(STRATUM, width=4, flag=0), sep='-'),  
+    # Calculate stratum area where needed (use convex hull approach)
+    # convert square nautical miles to square kilometers
+    stratumarea = STRATUM_AREA * 3.429904) %>% 
+  rename(year = YEAR,
+         date = EST_TOWDATE,
+         spp = SCINAME,
+         lat = LAT, 
+         lon = LON, 
+         depth = DEPTH,
+         stratum = STRATUM) %>%
+  filter(
+    # remove unidentified spp and non-species
+    spp != "" | !is.na(spp), 
+    !grepl("EGG", spp), 
+    !grepl("UNIDENTIFIED", spp)) %>%
+  group_by(haulid, stratum, stratumarea, year, date, lat, lon, depth, spp, SEASON) %>% 
+  summarise(wtcpue = sumna(wtcpue), abd = sumna(abd)) %>% 
+  select(haulid, year, date, lat, lon, stratum, stratumarea, depth, spp, wtcpue, abd, SEASON) %>% 
+  ungroup()
+write.csv(neus, "neus_done_by_sarah_adults.csv")
+```
+
+
+
+
+all specs (biomass and abundance)
+
+
+```{r}
+sumna <- function(x){
+  #acts like sum(na.rm=T) but returns NA if all are NA
+  if(!all(is.na(x))) return(sum(x, na.rm=T))
+  if(all(is.na(x))) return(NA)
+}
+
+
+```
+
+```{r}
+# Compile NEUS ===========================================================
+print("Compile NEUS")
+
+load("data_raw/neus_Survdat.RData")
+load("data_raw/neus_SVSPP.RData")
+
+neus_survdat <- survdat %>% 
+  # select specific columns
+  select(CRUISE6, STATION, STRATUM, SVSPP, CATCHSEX, SVVESSEL, YEAR, SEASON, EST_TOWDATE, LAT, LON, DEPTH, SURFTEMP, SURFSALIN, BOTTEMP, BOTSALIN, ABUNDANCE, BIOMASS) %>% 
+  # remove duplicates
+  distinct() %>% 
+  mutate(SVVESSEL = as.character(SVVESSEL), 
+         SEASON = as.character(SEASON))
+
+# sum different sexes of same spp together
+#okay so now we know that the biomass column was given to them as the calibrated cpue
+neus_survdat <- neus_survdat %>% 
+  group_by(YEAR, SEASON, EST_TOWDATE, LAT, LON, DEPTH, CRUISE6, STATION, STRATUM, SVSPP) %>% 
+  summarise(wtcpue = sum(BIOMASS), abd = sum(ABUNDANCE)) 
+
+
+# repeat for spp file 
+neus_spp <- spp %>%
+  # remove some columns from spp data
+  select(-ITISSPP, -COMNAME, -AUTHOR) %>% 
+  mutate(SCINAME = as.character(SCINAME))
+
+files <- as.list(dir(pattern = "neus_strata", path = "data_raw", full.names = T))
+
+neus_strata <- read_csv("data_raw/neus_strata.csv", col_types = cols(
+  STRGRP_DESC = col_character(),
+  STRATUM = col_double(),
+  STRATUM_NAME = col_character(),
+  STRATUM_AREA = col_double(),
+  MIDLAT = col_double(),
+  MIDLON = col_double(),
+  MINLAT = col_double(),
+  MAXLAT = col_double(),
+  MINLON = col_double(),
+  MAXLON = col_double()
+)) %>% 
+  select(STRATUM, STRATUM_AREA) %>% 
+  distinct()
+
+neus <- left_join(neus_survdat, neus_spp, by = "SVSPP") %>%
+  left_join(neus_strata, by = "STRATUM")
+
+# are there any strata in the data that are not in the strata file?
+# stopifnot(nrow(filter(neus, is.na(STRATUM_AREA))) == 0)
+
+neus <- neus %>%
+  mutate(
+    # Create a unique haulid
+    haulid = paste(formatC(CRUISE6, width=6, flag=0), formatC(STATION, width=3, flag=0), formatC(STRATUM, width=4, flag=0), sep='-'),  
+    # Calculate stratum area where needed (use convex hull approach)
+    # convert square nautical miles to square kilometers
+    stratumarea = STRATUM_AREA * 3.429904) %>% 
+  rename(year = YEAR,
+         date = EST_TOWDATE,
+         spp = SCINAME,
+         lat = LAT, 
+         lon = LON, 
+         depth = DEPTH,
+         stratum = STRATUM) %>%
+  filter(
+    # remove unidentified spp and non-species
+    spp != "" | !is.na(spp), 
+    !grepl("EGG", spp), 
+    !grepl("UNIDENTIFIED", spp)) %>%
+  group_by(haulid, stratum, stratumarea, year, date, lat, lon, depth, spp, SEASON) %>% 
+  summarise(wtcpue = sumna(wtcpue), abd = sumna(abd)) %>% 
+  select(haulid, year, date, lat, lon, stratum, stratumarea, depth, spp, wtcpue, abd, SEASON) %>% 
+  ungroup()
+write.csv(neus, "neus_done_by_sarah_2.csv")
+```
+
+
+###tidy format abundance 
+note, replace abd with wtcpue for biomass. 
+
+```{r}
+neus <- read.csv("neus_done_by_sarah_2.csv")
+ocean_adapt <- neus
+```
+
+manipulate ocean adapt to be in a tidy format. 
+```{r}
+#this takes about a minute to run
+ocean_adapt <- ocean_adapt %>% dplyr::select(-wtcpue)
+
+ocean_adapt <- ocean_adapt %>% 
+ group_by_at(vars(-abd)) %>% # group by everything other than the value column. 
+ mutate(row_id=1:n()) %>% ungroup() %>% # build group index
+ spread(key=spp, value=abd)  # spread
+
+ydat <- ocean_adapt[,11:653]
+ydat$month <- month(ocean_adapt$date)
+ydat$stratum <- ocean_adapt$stratum
+ydat$year <- ocean_adapt$year
+
+#regrid to be monthly
+ydat_2 <- ydat %>% group_by(year, month, stratum) %>% summarise_all(sum, na.rm=TRUE)
+
+
+
+xdat <- xdata_new %>% dplyr::select(month, year, stratum)
+#now fill in the values we have: 
+total_expand <- left_join(xdat, ydat_2, by=c("month", "year", "stratum"))
+
+ydata <- total_expand %>% dplyr::select(-month, -year, -stratum)
+
+write.csv(ydata, "ydata_gridded_abd.csv")
+
+
+```
+
+###tidy format abundance adults only
+note, replace abd with wtcpue for biomass. 
+
+```{r}
+neus <- read.csv("neus_done_by_sarah_adults.csv")
+ocean_adapt <- neus
+```
+
+manipulate ocean adapt to be in a tidy format. 
+```{r}
+#this takes about a minute to run
+ocean_adapt <- ocean_adapt %>% dplyr::select(-wtcpue)
+
+ocean_adapt <- ocean_adapt %>% 
+ group_by_at(vars(-abd)) %>% # group by everything other than the value column. 
+ mutate(row_id=1:n()) %>% ungroup() %>% # build group index
+ spread(key=spp, value=abd)  # spread
+
+ydat <- ocean_adapt[,11:ncol(ocean_adapt)]
+ydat$month <- month(ocean_adapt$date)
+ydat$stratum <- ocean_adapt$stratum
+ydat$year <- ocean_adapt$year
+
+#regrid to be monthly
+ydat_2 <- ydat %>% group_by(year, month, stratum) %>% summarise_all(sum, na.rm=TRUE)
+
+
+xdata_new$month <- xdata_new$month.x
+xdata_new$year <- xdata_new$year.x
+xdata_new$stratum <- xdata_new$groups
+
+
+xdat <- xdata_new %>% dplyr::select(month, year, stratum)
+#now fill in the values we have: 
+total_expand <- left_join(xdat, ydat_2, by=c("month", "year", "stratum"))
+
+ydata <- total_expand %>% dplyr::select(-month, -year, -stratum)
+
+write.csv(ydata, "ydata_gridded_abd_adult.csv")
+
+
+```
+
+###tidy format biomass
+```{r}
+ocean_adapt <- neus
+```
+
+manipulate ocean adapt to be in a tidy format. 
+```{r}
+#this takes about a minute to run
+ocean_adapt <- ocean_adapt %>% dplyr::select(-abd)
+
+ocean_adapt <- ocean_adapt %>% 
+ group_by_at(vars(-wtcpue)) %>% # group by everything other than the value column. 
+ mutate(row_id=1:n()) %>% ungroup() %>% # build group index
+ spread(key=spp, value=wtcpue)  # spread
+
+ydat <- ocean_adapt[,11:653]
+ydat$month <- month(ocean_adapt$date)
+ydat$stratum <- ocean_adapt$stratum
+ydat$year <- ocean_adapt$year
+
+#regrid to be monthly
+ydat_2 <- ydat %>% group_by(year, month, stratum) %>% summarise_all(sum, na.rm=TRUE)
+
+
+
+xdat <- xdata_new %>% dplyr::select(month, year, stratum)
+#now fill in the values we have: 
+total_expand <- left_join(xdat, ydat_2, by=c("month", "year", "stratum"))
+
+ydata <- total_expand %>% dplyr::select(-month, -year, -stratum)
+
+write.csv(ydata, "ydata_gridded_biomass.csv")
+```
+
+
+#Aggregate seasonally 
+```{r}
+
+xdata_new <- read.csv("xdata_added_climatology.csv")
+xdata_new$season <- ifelse(xdata_new$month < 7, "spring", "fall")
+#select out what we are interested in 
+
+xdata_new <- xdata_new %>% dplyr::select(depth, SEDIMENT, groups, times, year.x, month.x, NAOJFM.y, AMOyear.y, oisst_full, SSAL_woa_insit, chla, season)
+
+xdata_new$SEDSIZE <- ifelse(xdata_new$SEDIMENT ==  '0 - 0.03 Silt/Mud', .03, 
+                        ifelse(xdata_new$SEDIMENT ==  '0.03 - 0.17 Sand', .17,
+                               ifelse(xdata_new$SEDIMENT ==  '0.17 - 0.35 Sand',.35, 
+                                      ifelse(xdata_new$SEDIMENT ==  '0.35 - 0.36 Sand', .36,
+                                             ifelse(xdata_new$SEDIMENT ==  '0.36 - 0.48 Sand', .48, ifelse(xdata_new$SEDIMENT ==  '0.48+ Coarse Sand to Gravel',.50,NA))))))
+
+
+xdata_new <- xdata_new %>% dplyr::select(-SEDIMENT)
+
+ydata <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/ydata_gridded_biomass.csv")
+
+#need to group by on both x and y because i want to take the mean of x and the sum of y 
+
+ydata$season <- xdata_new$season
+ydata$year <- xdata_new$year
+ydata$groups <- xdata_new$groups
+
+ydata_season <- ydata %>% group_by(year, season, groups) %>% summarise_all(sum, na.rm=TRUE)
+ydata_season_bio <- ydata_season[5:ncol(ydata_season)]
+
+xdata_season <- xdata_new %>% rename(year = year.x) %>% 
+  group_by(year, season, groups) %>% summarise_all(mean, na.rm=TRUE)
+
+
+#add in time column 
+library(lubridate)
+xdata_season$day <- 15
+xdata_season$season_1 <- ifelse(xdata_season$season == "spring", 1, 2)
+xdata_season$date <- paste(xdata_season$year, xdata_season$season_1, xdata_season$day, sep="-") %>% ymd() %>% as.Date()
+
+
+times <- sort(unique(xdata_season$date))
+head(times)
+
+time <- match(xdata_season$date, times)
+head(time)
+table(time)
+
+xdata_season$times <- time
+
+
+
+
+#do the same for abundance 
+
+ydata <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/ydata_gridded_abd.csv")
+
+ydata$season <- xdata_new$season
+ydata$year <- xdata_new$year
+ydata$groups <- xdata_new$groups
+
+ydata_season <- ydata %>% group_by(year, season, groups) %>% summarise_all(sum, na.rm=TRUE)
+ydata_season_abd <- ydata_season[5:ncol(ydata_season)]
+
+
+#do the same for abundance of adults 
+
+ydata <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/ydata_gridded_abd_adult.csv")
+
+ydata$season <- xdata_new$season
+ydata$year <- xdata_new$year
+ydata$groups <- xdata_new$groups
+
+ydata_season <- ydata %>% group_by(year, season, groups) %>% summarise_all(sum, na.rm=TRUE)
+ydata_season_abd_adults <- ydata_season[5:ncol(ydata_season)]
+
+
+write.csv(xdata_season, "xdata_season.csv")
+write.csv(ydata_season_abd, "ydata_season_abd.csv")
+write.csv(ydata_season_abd_adults, "ydata_season_abd_adults.csv")
+
+write.csv(ydata_season_bio, "ydata_season_bio.csv")
+
+```
+
+##check stuff 
+
+see if each group has the same amount of times
+```{r}
+test <- xdata %>%
+      group_by(times) %>% 
+      summarise_each(funs(n_distinct(.)))
+```
+
+
+
+
+
+#Run GJAM 
+we don't have effort data. It should be constant for biomass, but I am not sure about abundance. 
+
+##load data (start here) 
+```{r}
+xdata_season <- read.csv("xdata_season.csv")
+ydata_season_abd <- read.csv("ydata_season_abd.csv")
+ydata_season_bio <- read.csv("ydata_season_bio.csv")
+ydata_season_abd_adults <- read.csv("ydata_season_abd_adults.csv")
+
+```
+
+
+##Biomass season 
+```{r}
+spp_class <- read.csv("spp_by_year_selected.csv")
+specnames <- as.vector(spp_class$SCINAME)
+ydata <- ydata_season_bio
+ydata[is.na(ydata)] <- 0
+
+
+#hat if I just did ydata with a spec interaction 
+ydata <- ydata[,colSums(ydata != 0) > 100] #at least 500 non-zero rows 
+ydata <- ydata[, colSums(ydata > 10)> 100] #at least 100 tows with 10 individuals caught 
+
+
+
+
+#xdata
+xdata <- xdata_season
+
+specnames <- colnames(ydata)
+alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- alphaSign %>% dplyr::select(-X)
+rownames(alphaSign) <- colnames(alphaSign)
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames,]
+specnames <- colnames(alphaSign)
+ydata <- ydata[,colnames(ydata) %in% specnames]
+#lets change the column names in ydata and alphasign to be common names instead of scientific names 
+spec <- as.data.frame(specnames)
+spec$SCINAME <- spec$specnames
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+specnames_2 <- left_join(spec, spp_selected_2, by = "SCINAME")
+specnames_2 <- as.vector(specnames_2$COMNAME)
+colnames(ydata) <- specnames_2
+colnames(alphaSign) <- specnames_2
+rownames(alphaSign) <- specnames_2
+rownames(alphaSign) <- colnames(alphaSign)
+#create edata (when there are no species at all, effort is .001)
+#create edata 
+edata_bio <- ydata
+edata_bio <- ifelse(rowSums(edata_bio>0), 1, .001)
+edata_bio <- matrix(edata_bio, ncol = ncol(ydata), nrow = nrow(ydata))
+colnames(edata_bio) <- colnames(ydata)
+edata <- edata_bio
+
+
+#alphaSign to just species I'm using now
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames_2]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames_2,]
+specnames_2 <- colnames(alphaSign)
+#fill missing times 
+timeCol   <- 'times'
+groupCol  <- 'groups'
+groupVars <- c( 'groups' )
+edata <- as.data.frame(edata) #get weird errors if I don't do this
+ydata <- as.data.frame(ydata)
+xdata <- as.data.frame(xdata)
+
+tmp <- gjamFillMissingTimes(xdata, ydata, edata, groupCol, timeCol,
+                            FILLMEANS = T, groupVars = groupVars,
+                            typeNames = 'CA', missingEffort = .001)    
+xdata <- tmp$xdata
+ydata <- tmp$ydata
+edata <- tmp$edata
+edata <- ifelse(is.na(edata), .001,edata)
+tlist <- tmp$timeList
+snames   <- colnames(ydata)
+trueE <- tmp$trueValues
+
+#fixit below
+#fixit below
+colnames(xdata) <- c("insert","groups","times", "X", "year", "season", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "SEDSIZE", "day", "season1", "date")
+
+effort <- list(columns = 1:length(snames), values = edata)
+
+```
+
+
+Try putting sst and salinity into beta as well as rho. I think SST is going to effect both immigration and growth 
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2,SST = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.05] <- -.05
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .05 ] <- .05
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 5000, burnin = 2000,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_21 <- .gjam(~  depth + SEDSIZE + SST + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_21')
+gjamPlot(outputRB_21, plotPars)
+save(outputRB_21, file='gjamOutputXRA_21/output.rdata')
+
+
+```
+
+###new
+try specifying species more (to capture some of those that are frequent predators and prey)
+```{r}
+#xdata
+xdata <- xdata_season
+
+#ydata 
+spp_class <- read.csv("spp_by_year_selected.csv")
+specnames <- as.vector(spp_class$SCINAME)
+ydata <- ydata_season_bio
+ydata[is.na(ydata)] <- 0
+
+#hat if I just did ydata with a spec interaction 
+ydata1 <- ydata[,colSums(ydata != 0) > 500] #at least 100 non-zero rows 
+ydata1 <- ydata1[, colSums(ydata1 > 10)> 100] #at least 100 tows with 10 individuals caught 
+
+#bay anchovy, jonah crab and atlantic rock crab are prey for a lot of species so I am going to add them back in. 
+
+ydata1$ANCHOA.MITCHILL <- ydata$ANCHOA.MITCHILL
+ydata1$CANCER.IRRORATUS<- ydata$CANCER.IRRORATUS
+ydata1$CANCER.BOREALIS<- ydata$CANCER.BOREALIS
+
+ydata <- ydata1
+
+
+
+specnames <- colnames(ydata)
+alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- alphaSign %>% dplyr::select(-X)
+rownames(alphaSign) <- colnames(alphaSign)
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames,]
+specnames <- colnames(alphaSign)
+ydata <- ydata[,colnames(ydata) %in% specnames]
+#lets change the column names in ydata and alphasign to be common names instead of scientific names 
+spec <- as.data.frame(specnames)
+spec$SCINAME <- spec$specnames
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+specnames_2 <- left_join(spec, spp_selected_2, by = "SCINAME")
+specnames_2 <- as.vector(specnames_2$COMNAME)
+colnames(ydata) <- specnames_2
+colnames(alphaSign) <- specnames_2
+rownames(alphaSign) <- specnames_2
+rownames(alphaSign) <- colnames(alphaSign)
+#create edata (when there are no species at all, effort is .001)
+#create edata 
+edata_bio <- ydata
+edata_bio <- ifelse(rowSums(edata_bio>0), 1, .001)
+edata_bio <- matrix(edata_bio, ncol = ncol(ydata), nrow = nrow(ydata))
+colnames(edata_bio) <- colnames(ydata)
+edata <- edata_bio
+
+
+#alphaSign to just species I'm using now
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames_2]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames_2,]
+specnames_2 <- colnames(alphaSign)
+#fill missing times 
+timeCol   <- 'times'
+groupCol  <- 'groups'
+groupVars <- c( 'groups' )
+edata <- as.data.frame(edata) #get weird errors if I don't do this
+ydata <- as.data.frame(ydata)
+xdata <- as.data.frame(xdata)
+
+tmp <- gjamFillMissingTimes(xdata, ydata, edata, groupCol, timeCol,
+                            FILLMEANS = T, groupVars = groupVars,
+                            typeNames = 'CA', missingEffort = .001)    
+xdata <- tmp$xdata
+ydata <- tmp$ydata
+edata <- tmp$edata
+edata <- ifelse(is.na(edata), .001,edata)
+tlist <- tmp$timeList
+snames   <- colnames(ydata)
+trueE <- tmp$trueValues
+
+#fixit below
+colnames(xdata) <- c("insert","groups","times", "X", "year", "season", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "SEDSIZE", "day", "season1", "date")
+
+effort <- list(columns = 1:length(snames), values = edata)
+
+```
+
+less species
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration (added one interaction term)
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SST = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL + SST*depth, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.05] <- -.05
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .05 ] <- .05
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_27 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ SST*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_28')
+gjamPlot(outputRB_27, plotPars)
+save(outputRB_27, file='gjamOutputXRA_28/output.rdata')
+
+```
+
+
+##abd season 
+
+```{r}
+spp_class <- read.csv("spp_by_year_selected.csv")
+specnames <- as.vector(spp_class$SCINAME)
+ydata <- ydata_season_abd
+ydata[is.na(ydata)] <- 0
+
+ydata_trim <- gjamTrimY(ydata, minObs = 500)
+ydata_trim <- ydata_trim$y
+
+ydata <- ydata[,colSums(ydata != 0) > 200]
+length(which(colSums(ydata) > 200))
+ydata[ydata<200] <- 0
+
+
+
+
+#xdata
+xdata <- xdata_season
+
+specnames <- colnames(ydata)
+alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- alphaSign %>% dplyr::select(-X)
+rownames(alphaSign) <- colnames(alphaSign)
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames,]
+specnames <- colnames(alphaSign)
+ydata <- ydata[,colnames(ydata) %in% specnames]
+#lets change the column names in ydata and alphasign to be common names instead of scientific names 
+spec <- as.data.frame(specnames)
+spec$SCINAME <- spec$specnames
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+specnames_2 <- left_join(spec, spp_selected_2, by = "SCINAME")
+specnames_2 <- as.vector(specnames_2$COMNAME)
+colnames(ydata) <- specnames_2
+colnames(alphaSign) <- specnames_2
+rownames(alphaSign) <- specnames_2
+rownames(alphaSign) <- colnames(alphaSign)
+#create edata (when there are no species at all, effort is 0.001)
+# effort <- rowSums(ydata_season_abd)/rowSums(ydata_season_bio)
+# edata_abd <- matrix(effort, ncol = ncol(ydata), nrow = nrow(ydata))
+# colnames(edata_abd) <- colnames(ydata)
+# edata_abd[is.na(edata_abd)] <- .001 #still 83 missing
+# edata <- edata_abd
+
+edata_bio <- ydata
+edata_bio <- ifelse(rowSums(edata_bio>0), 1, .001)
+edata_bio <- matrix(edata_bio, ncol = ncol(ydata), nrow = nrow(ydata))
+colnames(edata_bio) <- colnames(ydata)
+edata <- edata_bio
+
+edata <- as.data.frame(edata)
+ydata <- as.data.frame(ydata)
+xdata <- as.data.frame(xdata)
+
+#alphaSign to just species I'm using now
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames_2]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames_2,]
+specnames_2 <- colnames(alphaSign)
+#fill missing times 
+timeCol   <- 'times'
+groupCol  <- 'groups'
+groupVars <- c( 'groups' )
+tmp <- gjamFillMissingTimes(xdata, ydata, edata, groupCol, timeCol,
+                            FILLMEANS = T, groupVars = groupVars,
+                            typeNames = 'DA', missingEffort = .001)    
+xdata <- tmp$xdata
+ydata <- tmp$ydata
+edata <- tmp$edata
+edata <- ifelse(is.na(edata), .001,edata)
+tlist <- tmp$timeList
+snames   <- colnames(ydata)
+trueE <- tmp$trueValues
+
+#fixit below
+
+colnames(xdata) <- c("insert","groups","times", "year", "season", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "SEDSIZE", "season1", "date", "day")
+
+
+effort <- list(columns = 1:length(snames), values = edata)
+
+```
+
+
+
+
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2,SST = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.05] <- -.05
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .05 ] <- .05
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'DA', ng = 5000, burnin = 2000,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_22 <- .gjam(~  depth + SEDSIZE + SST + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_22')
+gjamPlot(outputRB_22, plotPars)
+save(outputRB_22, file='gjamOutputXRA_22/output.rdata')
+
+
+```
+
+
+
+##abd adults season 
+
+```{r}
+spp_class <- read.csv("spp_by_year_selected.csv")
+specnames <- as.vector(spp_class$SCINAME)
+ydata <- ydata_season_abd_adults
+ydata[is.na(ydata)] <- 0
+
+ydata <- ydata[,colSums(ydata != 0) > 200]
+
+
+
+#xdata
+xdata <- xdata_season
+
+specnames <- colnames(ydata)
+alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- alphaSign %>% dplyr::select(-X)
+rownames(alphaSign) <- colnames(alphaSign)
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames,]
+specnames <- colnames(alphaSign)
+ydata <- ydata[,colnames(ydata) %in% specnames]
+#lets change the column names in ydata and alphasign to be common names instead of scientific names 
+spec <- as.data.frame(specnames)
+spec$SCINAME <- spec$specnames
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+specnames_2 <- left_join(spec, spp_selected_2, by = "SCINAME")
+specnames_2 <- as.vector(specnames_2$COMNAME)
+colnames(ydata) <- specnames_2
+colnames(alphaSign) <- specnames_2
+rownames(alphaSign) <- specnames_2
+rownames(alphaSign) <- colnames(alphaSign)
+#create edata (when there are no species at all, effort is 0.001)
+# effort <- rowSums(ydata_season_abd)/rowSums(ydata_season_bio)
+# edata_abd <- matrix(effort, ncol = ncol(ydata), nrow = nrow(ydata))
+# colnames(edata_abd) <- colnames(ydata)
+# edata_abd[is.na(edata_abd)] <- .001 #still 83 missing
+# edata <- edata_abd
+
+edata_bio <- ydata
+edata_bio <- ifelse(rowSums(edata_bio>0), 1, .001)
+edata_bio <- matrix(edata_bio, ncol = ncol(ydata), nrow = nrow(ydata))
+colnames(edata_bio) <- colnames(ydata)
+edata <- edata_bio
+
+edata <- as.data.frame(edata)
+ydata <- as.data.frame(ydata)
+xdata <- as.data.frame(xdata)
+
+#alphaSign to just species I'm using now
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames_2]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames_2,]
+specnames_2 <- colnames(alphaSign)
+#fill missing times 
+timeCol   <- 'times'
+groupCol  <- 'groups'
+groupVars <- c( 'groups' )
+tmp <- gjamFillMissingTimes(xdata, ydata, edata, groupCol, timeCol,
+                            FILLMEANS = T, groupVars = groupVars,
+                            typeNames = 'DA', missingEffort = .001)    
+xdata <- tmp$xdata
+ydata <- tmp$ydata
+edata <- tmp$edata
+edata <- ifelse(is.na(edata), .001,edata)
+tlist <- tmp$timeList
+snames   <- colnames(ydata)
+trueE <- tmp$trueValues
+
+#fixit below(not sure about the column X)
+
+colnames(xdata) <- c("insert","groups","times", "X", "year", "season", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "SEDSIZE", "season1", "date", "day")
+
+
+effort <- list(columns = 1:length(snames), values = edata)
+
+```
+
+
+
+
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2,SST = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.05] <- -.05
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .05 ] <- .05
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'DA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_23 <- .gjam(~  depth + SEDSIZE + SST + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_23')
+gjamPlot(outputRB_23, plotPars)
+save(outputRB_23, file='gjamOutputXRA_23/output.rdata')
+
+
+```
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2,SST = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'DA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_24 <- .gjam(~  depth + SEDSIZE + SST + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_24')
+gjamPlot(outputRB_24, plotPars)
+save(outputRB_24, file='gjamOutputXRA_24/output.rdata')
+
+
+```
+
+#Biomass and chla 
+try just the years with chla data. Also add an interaction term with chla and depth 
+
+```{r}
+#xdata
+xdata <- xdata_season
+xdata_na <- xdata_season[is.na(xdata_season$chla), ]
+xdata_na %>% count(year)
+
+#so it looks like there is data starting in 1998 (which makes sense for me)
+
+
+
+#ydata 
+spp_class <- read.csv("spp_by_year_selected.csv")
+specnames <- as.vector(spp_class$SCINAME)
+ydata <- ydata_season_bio
+ydata[is.na(ydata)] <- 0
+
+#select certain years 
+ydata$year <- xdata$year
+
+xdata <- subset(xdata, xdata$year > 1997)
+ydata <- subset(ydata, ydata$year > 1997)
+
+ydata <- ydata %>% dplyr::select(-year)
+xdata$times <- xdata$times - 26
+
+#hat if I just did ydata with a spec interaction 
+ydata1 <- ydata[,colSums(ydata != 0) > 100] #at least 100 non-zero rows 
+ydata1 <- ydata1[, colSums(ydata1 > 10)> 100] #at least 100 tows with 10 individuals caught 
+
+#bay anchovy, jonah crab and atlantic rock crab are prey for a lot of species so I am going to add them back in. 
+
+ydata1$ANCHOA.MITCHILL <- ydata$ANCHOA.MITCHILL
+ydata1$CANCER.IRRORATUS<- ydata$CANCER.IRRORATUS
+ydata1$CANCER.BOREALIS<- ydata$CANCER.BOREALIS
+
+ydata <- ydata1
+
+
+
+specnames <- colnames(ydata)
+alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- alphaSign %>% dplyr::select(-X)
+rownames(alphaSign) <- colnames(alphaSign)
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames,]
+specnames <- colnames(alphaSign)
+ydata <- ydata[,colnames(ydata) %in% specnames]
+#lets change the column names in ydata and alphasign to be common names instead of scientific names 
+spec <- as.data.frame(specnames)
+spec$SCINAME <- spec$specnames
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+specnames_2 <- left_join(spec, spp_selected_2, by = "SCINAME")
+specnames_2 <- as.vector(specnames_2$COMNAME)
+colnames(ydata) <- specnames_2
+colnames(alphaSign) <- specnames_2
+rownames(alphaSign) <- specnames_2
+rownames(alphaSign) <- colnames(alphaSign)
+#create edata (when there are no species at all, effort is .001)
+#create edata 
+edata_bio <- ydata
+edata_bio <- ifelse(rowSums(edata_bio>0), 1, .001)
+edata_bio <- matrix(edata_bio, ncol = ncol(ydata), nrow = nrow(ydata))
+colnames(edata_bio) <- colnames(ydata)
+edata <- edata_bio
+
+
+#alphaSign to just species I'm using now
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames_2]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames_2,]
+specnames_2 <- colnames(alphaSign)
+#fill missing times 
+timeCol   <- 'times'
+groupCol  <- 'groups'
+groupVars <- c( 'groups' )
+edata <- as.data.frame(edata) #get weird errors if I don't do this
+ydata <- as.data.frame(ydata)
+xdata <- as.data.frame(xdata)
+
+tmp <- gjamFillMissingTimes(xdata, ydata, edata, groupCol, timeCol,
+                            FILLMEANS = T, groupVars = groupVars,
+                            typeNames = 'CA', missingEffort = .001) 
+
+xdata <- tmp$xdata
+ydata <- tmp$ydata
+edata <- tmp$edata
+edata <- ifelse(is.na(edata), .001,edata)
+tlist <- tmp$timeList
+snames   <- colnames(ydata)
+trueE <- tmp$trueValues
+
+#fixit below
+colnames(xdata) <- c("insert","groups","times", "X", "year", "season", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "chla", "SEDSIZE", "day", "season1", "date")
+
+effort <- list(columns = 1:length(snames), values = edata)
+
+#Fill in NAs from xdata here. 
+
+xdata_na <- xdata[is.na(xdata$year), ]
+xdata_na$year <- 1997
+xdata_na$season <- 2
+#join to the one that has 1997 in it!
+xdata_na <- left_join(xdata_na, xdata_season, by = c("year" = "year", "season" = "season_1", "groups2" = "groups"))
+
+xdata_na <- xdata_na %>% dplyr::select(insert, groups, times.x, X.x, year, season, groups2, depth.y, times.y, month.x, NAOJFM.y, AMOyear.y, oisst_full, SSAL_woa_insit, chla.y, SEDSIZE.y, day.y, season.y, date.y)
+
+colnames(xdata_na) <- colnames(xdata)
+xdata_test <- left_join(xdata, xdata_na, by = c("insert" = "insert", "groups" = "groups"))
+
+#ugh there is probably a better way to do this in a for loop but im lazy now
+xdata_test$season.x <- ifelse(is.na(xdata_test$year.x), xdata_test$season.y, xdata_test$season.x)
+xdata_test$depth.x <- ifelse(is.na(xdata_test$depth.x), xdata_test$depth.y, xdata_test$depth.x)
+xdata_test$times2.x <- ifelse(is.na(xdata_test$times2.x), xdata_test$times2.y, xdata_test$times2.x)
+xdata_test$NAOJFM.x <- ifelse(is.na(xdata_test$NAOJFM.x), xdata_test$NAOJFM.y, xdata_test$NAOJFM.x)
+xdata_test$AMOyear.x <- ifelse(is.na(xdata_test$AMOyear.x), xdata_test$AMOyear.y, xdata_test$AMOyear.x)
+xdata_test$SST.x <- ifelse(is.na(xdata_test$SST.x), xdata_test$SST.y, xdata_test$SST.x)
+xdata_test$SSAL.x <- ifelse(is.na(xdata_test$SSAL.x), xdata_test$SSAL.y, xdata_test$SSAL.x)
+xdata_test$chla.x <- ifelse(is.na(xdata_test$chla.x), xdata_test$chla.y, xdata_test$chla.x)
+xdata_test$SEDSIZE.x <- ifelse(is.na(xdata_test$SEDSIZE.x), xdata_test$SEDSIZE.y, xdata_test$SEDSIZE.x)
+
+xdata <- xdata_test[,1:19]
+colnames(xdata) <- c("insert","groups","times", "X", "year", "season", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "chla", "SEDSIZE", "day", "season1", "date")
+```
+
+put chla in rho and beta?
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -1, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2, chla = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2, chla = 2) )
+
+
+#effect on e/imigration (added one interaction term)
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SST = -2, SSAL = -2, chla = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2, chla = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL + chla),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 10000, burnin = 5000,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_31 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_31')
+gjamPlot(outputRB_31, plotPars)
+save(outputRB_31, file='gjamOutputXRA_31/output.rdata')
+
+```
+
+
+
+#Not seasonal 
+##biomass
+```{r}
+spp_class <- read.csv("spp_by_year_selected.csv")
+specnames <- as.vector(spp_class$SCINAME)
+xdata <- xdata_new
+#lets also add a column for sediment size 
+xdata$SEDSIZE <- ifelse(xdata$SEDIMENT ==  '0 - 0.03 Silt/Mud', .03, 
+                        ifelse(xdata$SEDIMENT ==  '0.03 - 0.17 Sand', .17,
+                               ifelse(xdata$SEDIMENT ==  '0.17 - 0.35 Sand',.35, 
+                                      ifelse(xdata$SEDIMENT ==  '0.35 - 0.36 Sand', .36,
+                                             ifelse(xdata$SEDIMENT ==  '0.36 - 0.48 Sand', .48, ifelse(xdata$SEDIMENT ==  '0.48+ Coarse Sand to Gravel',.50,NA))))))
+ydata <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/ydata_gridded_biomass.csv")
+ydata <- ydata %>% dplyr::select(-X)
+ydata <- ydata*1
+ydata[is.na(ydata)] <- 0
+
+ydata1 <- ydata[,colSums(ydata != 0) > 200] #this way we can get the anchovies in there
+ydata1 <- ydata1[, colSums(ydata1 > 10)> 100] #at least 100 tows with 10 individuals caught 
+
+#bay anchovy, jonah crab and atlantic rock crab are prey for a lot of species so I am going to add them back in. 
+
+ydata1$ANCHOA.MITCHILL <- ydata$ANCHOA.MITCHILL
+ydata1$CANCER.IRRORATUS<- ydata$CANCER.IRRORATUS
+ydata1$CANCER.BOREALIS<- ydata$CANCER.BOREALIS
+
+ydata <- ydata1
+#ydata <- ydata*1000
+#remove the generic term Cephalopod. There are more specific ones for that, and there aren't a lot of cephalopod in ydata. 
+#ydata <- ydata %>% dplyr::select(-CEPHALOPODA)
+specnames <- colnames(ydata)
+alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- alphaSign %>% dplyr::select(-X)
+rownames(alphaSign) <- colnames(alphaSign)
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames,]
+specnames <- colnames(alphaSign)
+ydata <- ydata[,colnames(ydata) %in% specnames]
+#lets change the column names in ydata and alphasign to be common names instead of scientific names 
+spec <- as.data.frame(specnames)
+spec$SCINAME <- spec$specnames
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+specnames_2 <- left_join(spec, spp_selected_2, by = "SCINAME")
+specnames_2 <- as.vector(specnames_2$COMNAME)
+colnames(ydata) <- specnames_2
+colnames(alphaSign) <- specnames_2
+rownames(alphaSign) <- specnames_2
+rownames(alphaSign) <- colnames(alphaSign)
+#create edata (when there are no species at all, effort is 0)
+
+edata_bio <- ydata
+edata_bio <- ifelse(rowSums(edata_bio>0), 1, .001)
+edata_bio <- matrix(edata_bio, ncol = ncol(ydata), nrow = nrow(ydata))
+colnames(edata_bio) <- colnames(ydata)
+edata <- edata_bio
+
+edata <- as.data.frame(edata)
+ydata <- as.data.frame(ydata)
+xdata <- as.data.frame(xdata)
+
+
+#alphaSign to just species I'm using now
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames_2]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames_2,]
+specnames_2 <- colnames(alphaSign)
+#fill missing times 
+timeCol   <- 'times'
+groupCol  <- 'groups'
+groupVars <- c( 'groups' )
+tmp <- gjamFillMissingTimes(xdata, ydata, edata, groupCol, timeCol,
+                            FILLMEANS = T, groupVars = groupVars,
+                            typeNames = 'CA', missingEffort = .001)    
+xdata <- tmp$xdata
+ydata <- tmp$ydata
+edata <- tmp$edata
+edata <- ifelse(is.na(edata), .001,edata)
+tlist <- tmp$timeList
+snames   <- colnames(ydata)
+trueE <- tmp$trueValues
+
+#fixit below
+colnames(xdata) <- c("insert","groups","times","depth","SEDIMENT","groups2", "times2", "year", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "SEDSIZE")
+
+effort <- list(columns = 1:length(snames), values = edata)
+
+```
+
+eveything but sediment and depth in rhos
+alpha 4-4 
+
+```{r}
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_17 <- .gjam(~  depth + SEDSIZE, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = F, outFolder = 'gjamOutputXRA_17')
+gjamPlot(outputRB_17, plotPars)
+save(outputRB_17, file='gjamOutputXRA_17/output.rdata')
+
+#grid plots didn't work.
+
+```
+
+
+
+#alpha .05
+
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.05] <- -.05
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .05 ] <- .05
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 3000, burnin = 1000,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_18 <- .gjam(~  depth + SEDSIZE, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = F, outFolder = 'gjamOutputXRA_18')
+gjamPlot(outputRB_18, plotPars)
+save(outputRB_18, file='gjamOutputXRA_18/output.rdata')
+
+
+```
+
+
+Try putting sst and salinity into beta as well as rho. I think SST is going to effect both immigration and growth 
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2,SST = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.05] <- -.05
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .05 ] <- .05
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_17 <- .gjam(~  depth + SEDSIZE + SST + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+load("gjamOutputXRA_17/output.rdata")
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = F, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_17')
+gjamPlot(outputRB_17, plotPars)
+save(outputRB_17, file='gjamOutputXRA_17/output.rdata')
+
+
+```
+
+
+run longer
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2,SST = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.05] <- -.05
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .05 ] <- .05
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_20 <- .gjam(~  depth + SEDSIZE + SST + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+#load("gjamOutputXRA_20/output.rdata")
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_20')
+gjamPlot(outputRB_20, plotPars)
+save(outputRB_20, file='gjamOutputXRA_20/output.rdata')
+
+
+```
+
+##abundance
+```{r}
+spp_class <- read.csv("spp_by_year_selected.csv")
+specnames <- as.vector(spp_class$SCINAME)
+xdata <- xdata_new
+#lets also add a column for sediment size 
+xdata$SEDSIZE <- ifelse(xdata$SEDIMENT ==  '0 - 0.03 Silt/Mud', .03, 
+                        ifelse(xdata$SEDIMENT ==  '0.03 - 0.17 Sand', .17,
+                               ifelse(xdata$SEDIMENT ==  '0.17 - 0.35 Sand',.35, 
+                                      ifelse(xdata$SEDIMENT ==  '0.35 - 0.36 Sand', .36,
+                                             ifelse(xdata$SEDIMENT ==  '0.36 - 0.48 Sand', .48, ifelse(xdata$SEDIMENT ==  '0.48+ Coarse Sand to Gravel',.50,NA))))))
+ydata <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/ydata_gridded_abd.csv")
+ydata <- ydata %>% dplyr::select(-X)
+ydata <- ydata*1
+ydata[is.na(ydata)] <- 0
+
+ydata <- ydata[,colSums(ydata != 0) > 200] #this way we can get the anchovies in there
+#get out species with a lot of 0s in their rows 
+
+#ydata <- ydata*100
+#remove the generic term Cephalopod. There are more specific ones for that, and there aren't a lot of cephalopod in ydata. 
+#ydata <- ydata %>% dplyr::select(-CEPHALOPODA)
+specnames <- colnames(ydata)
+alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- alphaSign %>% dplyr::select(-X)
+rownames(alphaSign) <- colnames(alphaSign)
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames,]
+specnames <- colnames(alphaSign)
+ydata <- ydata[,colnames(ydata) %in% specnames]
+#lets change the column names in ydata and alphasign to be common names instead of scientific names 
+spec <- as.data.frame(specnames)
+spec$SCINAME <- spec$specnames
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+specnames_2 <- left_join(spec, spp_selected_2, by = "SCINAME")
+specnames_2 <- as.vector(specnames_2$COMNAME)
+colnames(ydata) <- specnames_2
+colnames(alphaSign) <- specnames_2
+rownames(alphaSign) <- specnames_2
+rownames(alphaSign) <- colnames(alphaSign)
+#create edata (when there are no species at all, effort is 0)
+edata <- ydata
+edata[rowSums(edata)==0,] <-.001
+
+
+#alphaSign to just species I'm using now
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames_2]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames_2,]
+specnames_2 <- colnames(alphaSign)
+#fill missing times 
+timeCol   <- 'times'
+groupCol  <- 'groups'
+groupVars <- c( 'groups' )
+tmp <- gjamFillMissingTimes(xdata, ydata, edata, groupCol, timeCol,
+                            FILLMEANS = T, groupVars = groupVars,
+                            typeNames = 'DA', missingEffort = .001)    
+xdata <- tmp$xdata
+ydata <- tmp$ydata
+edata <- tmp$edata
+edata <- ifelse(is.na(edata), .001,edata)
+tlist <- tmp$timeList
+snames   <- colnames(ydata)
+trueE <- tmp$trueValues
+
+#fixit below
+colnames(xdata) <- c("insert","groups","times","depth","SEDIMENT","groups2", "times2", "year", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "SEDSIZE")
+
+effort <- list(columns = 1:length(snames), values = edata)
+
+```
+
+Try putting sst and salinity into beta as well as rho. I think SST is going to effect both immigration and growth 
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2,SST = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.05] <- -.05
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .05 ] <- .05
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'DA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_21 <- .gjam(~  depth + SEDSIZE + SST + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_21')
+gjamPlot(outputRB_1T, plotPars)
+save(outputRB_21, file='gjamOutputXRA_21/output.rdata')
+
+
+```
+
+
+
+remove salinity from immigration
+```{r}
+
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2, SSAL = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2, SSAL = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2,SST = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST + SSAL),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'DA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_21 <- .gjam(~  depth + SEDSIZE + SST + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_21')
+gjamPlot(outputRB_1T, plotPars)
+save(outputRB_21, file='gjamOutputXRA_21/output.rdata')
+
+
+```
+
+
+
+
+
+
+
+
+
+#OLD
+##with fishing pressure 
+This is just using the fish that are selected for running with gjam (116 fish) those columns are Fpelagic_sel etc. If you want to look at the fishing pressure for the greater community (150 species), use Fpelagic etc. So far this only works if you put fishing pressure in the betas (which I think makes sense as they would influence how many fish there are not their growth rate?)
+no salinity
+
+```{r}
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2))
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SSAL = -2, Fpelagic = -2, Fbenthic = -2, Fdemersal = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SSAL = 2, Fpelagic = 2, Fbenthic = 2, Fdemersal = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SSAL + Fpelagic + Fbenthic + Fdemersal, formulaRho = as.formula(~  NAOJFM + AMOyear + SST ),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.005] <- -.005
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .005 ] <- .005
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+formula  <- as.formula( ~depth + SEDSIZE + SSAL + Fpelagic + Fbenthic + Fdemersal )
+#output
+outputRB_13 <- .gjam(formula, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T,
+                 outFolder = 'gjamOutputXRA_13')
+gjamPlot(outputRB_13, plotPars)
+save(outputRB_13, file='gjamOutputXRA_13/output.rdata')
+
+```
+
+##all fishing pressure 
+```{r}
+# effect on species growth.
+xdata$Ftotal <- xdata$Fbenthic + xdata$Fdemersal + xdata$Fpelagic
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2))
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SSAL = -2,Ftotal = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SSAL = 2, Ftotal = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SSAL + Ftotal , formulaRho = as.formula(~  NAOJFM + AMOyear + SST),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.005] <- -.005
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .005 ] <- .005
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+formula  <- as.formula( ~depth + SEDSIZE + SSAL + Ftotal)
+#output
+outputRB_16 <- .gjam(formula, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T,
+                 outFolder = 'gjamOutputXRA_16')
+gjamPlot(outputRB_16, plotPars)
+save(outputRB_16, file='gjamOutputXRA_16/output.rdata')
+
+```
+
+#Alpha .0005 (no fishing)
+```{r}
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.0005] <- -.0005
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .0005 ] <- .0005
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_12 <- .gjam(~  depth + SEDSIZE + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_12')
+gjamPlot(outputRB_12, plotPars)
+save(outputRB_12, file='gjamOutputXRA_12/output.rdata')
+#get a strange plotting error 
+
+
+
+
+```
+
+##Alpha .00005 (no fishing)
+```{r}
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.00005] <- -.00005
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .00005 ] <- .00005
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_14 <- .gjam(~  depth + SEDSIZE + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_14')
+gjamPlot(outputRB_14, plotPars)
+save(outputRB_14, file='gjamOutputXRA_14/output.rdata')
+#get a strange plotting error 
+
+
+
+
+```
+##Alpha .000005 (no fishing)
+```{r}
+#set priors
+
+# effect on species growth.
+
+rhoPrior <- list(lo = list(intercept = -.5, SST = -2, NAOJFM = -2, AMOyear = -2), hi = list(intercept = 2,SST = 2, NAOJFM = 2, AMOyear = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SSAL = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SSAL = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SSAL, formulaRho = as.formula(~  NAOJFM + AMOyear + SST),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -.000005] <- -.000005
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > .000005 ] <- .000005
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 1000, burnin = 500,  
+           timeList = timeList, effort = effort) 
+
+#output
+outputRB_15 <- .gjam(~  depth + SEDSIZE + SSAL, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = F, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'gjamOutputXRA_15')
+gjamPlot(outputRB_15, plotPars)
+save(outputRB_15, file='gjamOutputXRA_15/output.rdata')
+#get a strange plotting error 
+
+load("gjamOutputXRA_8.rdata")
+```
+
+#Plot
+##color coded by order 
+```{r}
+out <- outputRB_29
+specnames_use <- colnames(out[["inputs"]][["y"]])
+
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_order <- spp_class %>% dplyr::select(COMNAME, order, order_common)
+spp_order$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_order$COMNAME)
+spp_order_sel <- spp_order[spp_order$COMNAME %in% specnames_use,]
+Sharks <- subset(spp_order_sel, spp_order_sel$order_common == "angel sharks" | spp_order_sel$order_common == "ground sharks"| spp_order_sel$order_common == "ground sharks "| spp_order_sel$order_common == "squaliformes")
+
+Rays <- subset(spp_order_sel, spp_order_sel$order_common == "electric rays" | spp_order_sel$order_common == "rays")
+
+Squid_Oct <- subset(spp_order_sel, spp_order_sel$order_common == "cephalopod" | spp_order_sel$order_common == "squid"| spp_order_sel$order_common == "octopoda")
+
+Decapods <- subset(spp_order_sel, spp_order_sel$order_common == "decapods"| spp_order_sel$order_common == "horseshoe crab")
+
+Flatfishes <- subset(spp_order_sel, spp_order_sel$order_common == "flatfishes")
+
+Cods <- subset(spp_order_sel, spp_order_sel$order_common == "cods and allies")
+
+Small_pelagic <- subset(spp_order_sel, spp_order_sel$order_common == "herrings and anchovys "| spp_order_sel$order_common == "mackerels"| spp_order_sel$order_common == "dories "| spp_order_sel$order_common == "smelts")
+
+Perch_like <- subset(spp_order_sel, spp_order_sel$order_common == "perch like"| spp_order_sel$order_common == "perch like ")
+
+Mollusk_bivalve <- subset(spp_order_sel, spp_order_sel$order_common == "mollusks and bivalves")
+
+Other_demersal_fish <- subset(spp_order_sel, spp_order_sel$order_common == "anglerfishes"| spp_order_sel$order_common == "beardfishes"| spp_order_sel$order_common == "grinners"| spp_order_sel$order_common == "hagfishes"| spp_order_sel$order_common == "lanternfish"| spp_order_sel$order_common == "pipefishes and seahorses"| spp_order_sel$order_common == "tetraodontiformes"| spp_order_sel$order_common == "scorpionfishes and flatheads")
+
+Eels <- subset(spp_order_sel, spp_order_sel$order_common == "cusk eels"| spp_order_sel$order_common == "eels and morays ")
+
+
+specGroups <- list(
+  Sharks = c(as.vector(Sharks$COMNAME)), 
+  Rays = c(as.vector(Rays$COMNAME)),
+  Squid_Oct = c(as.vector(Squid_Oct$COMNAME)),
+  Decapods = c(as.vector(Decapods$COMNAME)),
+  Flatfishes = c(as.vector(Flatfishes$COMNAME)),   
+  Cods = c(as.vector(Cods$COMNAME)),
+  Small_pelagic = c(as.vector(Small_pelagic$COMNAME)),
+  Perch_like = c(as.vector(Perch_like$COMNAME)),
+  Mollusk_bivalve = c(as.vector(Mollusk_bivalve$COMNAME)),
+  Other_demersal_fish = c(as.vector(Other_demersal_fish$COMNAME)),
+  Eels = c(as.vector(Eels$COMNAME))
+)
+
+s <- ncol(out[["inputs"]][["y"]])
+specColor <- rep('black', s)
+snames <- colnames(out[["inputs"]][["y"]])
+names(specColor) = snames
+
+cc <- c("#006ba4", "#395E87",  "#ababab", "#595959", "#ff800e", "#c85200", "#8ab8e3", "#ffbc79", "#898989",  "#873f0e", "black")
+
+for(j in 1:length(specGroups)){
+  wj <- which(snames %in% specGroups[[j]])
+  specColor[wj] <- cc[j]
+  names(specColor)[wj] <- names(specGroups)[j]
+}
+
+specs <- cbind(specColor, snames)
+
+
+specColor = specColor 
+#load('gjamOutputXRA_8/output.rdata')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T,specColor = specColor,
+                 outFolder = 'gjamOutputXRA_29')
+gjamPlot(outputRB_29, plotPars)
+
+
+plot(NULL ,xaxt='n',yaxt='n',bty='n',ylab='',xlab='', xlim=0:1, ylim=0:1)
+legend("topleft", legend =c("Sharks", "Rays", "Squids and Oct", "Decapods", "Flatfishes", "Cods", "Small pelagics", "Perch like", "Mollusks and bivalves", "Other demersal fish", "Eels"), pch=16, pt.cex=2.5, cex=1.2, bty='n',
+    col = c("#006ba4", "#395E87",  "#ababab", "#595959", "#ff800e", "#c85200", "#8ab8e3", "#ffbc79", "#898989",  "#873f0e", "black"))
+mtext("Species", at=0.2, cex=2)
+
+
+```
+###bar plot
+```{r}
+out <- outputRB_29
+sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+    
+sensSe <- out[["parameters"]][["sensSe"]]
+sigMu <- out[["parameters"]][["sigMu"]]
+sensAlpha <- out[["parameters"]][["sensAlpha"]]
+sensRho <- out[["parameters"]][["sensRho"]]
+sensBeta <- out[["parameters"]][["sensBeta"]]
+
+sensMu <- cbind(sensMu, sensAlpha[,1])
+sensSe <- cbind(sensSe, sensAlpha[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'alpha'
+scol <- c(scol, acol[1])
+
+sensMu <- cbind(sensMu, sensRho[,1])
+sensSe <- cbind(sensSe, sensRho[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'rho'
+scol <- c(scol, acol[2])
+
+sensMu <- cbind(sensMu, sensBeta[,1])
+sensSe <- cbind(sensSe, sensBeta[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'beta'
+scol <- c(scol, acol[3])
+
+ 
+      
+      nc <- ncol(sensMu)
+ 
+      # total variance
+      ord <- order(sensMu[,1], decreasing = T)
+      
+      mfrow <- c(1,1)
+      par( mfrow = mfrow, bty = 'n', mar = c(3,4,1,2) )
+      
+    #  scol <- colF(ncol(sensMu))
+        
+        sigma <- sqrt( diag( sigMu )) #sensAlpha, sensRho, sensBeta on sd scale
+        sens  <- cbind(sensMu, sigma)
+        
+        sens <- sens^2
+        
+        sprop <- sweep( sens, 1, rowSums(sens), '/')
+        ord <- order(sprop[,2], decreasing = T)
+        
+        smu <- t(sprop[ord,])
+        smu <- smu[1:(nrow(smu)-1),]
+        #get coloring right 
+    smu2 <- t(smu)  
+    smu2 <- as.data.frame(smu2) 
+    smu2$snames <- rownames(smu2)
+    specs <- as.data.frame(specs)
+    smu2 <- left_join(smu2, specs, by = c("snames"))
+    
+    smu3 <- t(smu2)
+    colnames(smu3) <- smu2$specs
+        smax <- max( colSums(smu) )
+        tmp0 <- barplot( smu, beside = F, col = .getColor(scol, .4), border = scol, xaxt = 'n',
+                        ylim = c(-.5, smax), ylab = 'Proportion of total variance' )
+        tmp0
+        text( tmp0 - .2*diff(tmp0)[1], -.1, colnames(smu), srt = 90, pos = 1, cex=.6, col = as.vector(smu2$specColor))
+      
+      legend("topright", legend =c("Sharks", "Rays", "Squids and Oct", "Decapods", "Flatfishes", "Cods", "Small pelagics", "Perch like", "Mollusks and bivalves", "Other demersal fish", "Eels"), pch=16, pt.cex=1, cex=.6, bty='n',
+    col = c("#006ba4", "#395E87",  "#ababab", "#595959", "#ff800e", "#c85200", "#8ab8e3", "#ffbc79", "#898989",  "#873f0e", "black"))
+     
+      if(nc == 1)text( tmp[1,], 1.05*apply(smu + sse, 2, max), colnames(smu), srt = 75, pos = 4,
+                       cex = .3)
+      mtext( 'Immigration/emigration', side = 1, outer = T, line = -2, adj = .9,
+             col = scol[3])
+      mtext( 'Density dependence', side = 1, outer = T, line = -2, adj = .1,
+             col = scol[1])
+      mtext( 'DI growth', side = 1, outer = T, line = -2, adj = .5,
+             col = scol[2])
+      
+      
+      sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+  
+    
+ 
+```
+
+##by overfishing status 
+
+
+```{r}
+out <- outputRB_29
+specnames_use <- colnames(out[["inputs"]][["y"]])
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_status <- spp_class %>% dplyr::select(COMNAME, stock_status)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+Unknown <- subset(spp_order_sel, spp_order_sel$stock_status == "unknown")
+
+Stable <- subset(spp_order_sel, spp_order_sel$stock_status == "stable ")
+
+Declining <- subset(spp_order_sel, spp_order_sel$stock_status == "declining ")
+
+Depleted <- subset(spp_order_sel, spp_order_sel$stock_status == "depleted ")
+
+Rebuilt <- subset(spp_order_sel, spp_order_sel$stock_status == "rebuilt")
+
+specGroups <- list(
+  Unknown = c(as.vector(Unknown$COMNAME)), 
+  Stable = c(as.vector(Stable$COMNAME)),
+  Rebuilt = c(as.vector(Rebuilt$COMNAME)),
+  Declining = c(as.vector(Declining$COMNAME)),
+  Depleted = c(as.vector(Depleted$COMNAME))
+)
+
+s <- ncol(out[["inputs"]][["y"]])
+specColor <- rep('black', s)
+snames <- colnames(out[["inputs"]][["y"]])
+names(specColor) = snames
+
+cc <- c("#ababab", "#006ba4", "#8ab8e3", "#ffbc79","#ff800e")
+
+for(j in 1:length(specGroups)){
+  wj <- which(snames %in% specGroups[[j]])
+  specColor[wj] <- cc[j]
+  names(specColor)[wj] <- names(specGroups)[j]
+}
+
+specs <- cbind(specColor, snames)
+
+
+specColor = specColor 
+#load('gjamOutputXRA_13/output.rdata')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T,specColor = specColor,
+                 outFolder = 'gjamOutputXRA_29_status')
+gjamPlot(outputRB_29, plotPars)
+
+
+plot(NULL ,xaxt='n',yaxt='n',bty='n',ylab='',xlab='', xlim=0:1, ylim=0:1)
+legend("topleft", legend =c("Unknown", "Stable", "Rebuilt", "Declining", "Depleted"), pch=16, pt.cex=2.5, cex=1.2, bty='n',
+    col = c("#ababab", "#006ba4", "#8ab8e3", "#ffbc79","#ff800e"))
+mtext("Species", at=0.2, cex=2)
+```
+
+
+
+###bar plot
+
+```{r}
+out <- outputRB_27
+sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+    
+sensSe <- out[["parameters"]][["sensSe"]]
+sigMu <- out[["parameters"]][["sigMu"]]
+sensAlpha <- out[["parameters"]][["sensAlpha"]]
+sensRho <- out[["parameters"]][["sensRho"]]
+sensBeta <- out[["parameters"]][["sensBeta"]]
+
+sensMu <- cbind(sensMu, sensAlpha[,1])
+sensSe <- cbind(sensSe, sensAlpha[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'alpha'
+scol <- c(scol, acol[1])
+
+sensMu <- cbind(sensMu, sensRho[,1])
+sensSe <- cbind(sensSe, sensRho[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'rho'
+scol <- c(scol, acol[2])
+
+sensMu <- cbind(sensMu, sensBeta[,1])
+sensSe <- cbind(sensSe, sensBeta[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'beta'
+scol <- c(scol, acol[3])
+
+ 
+      
+      nc <- ncol(sensMu)
+ 
+      # total variance
+      ord <- order(sensMu[,1], decreasing = T)
+      
+      mfrow <- c(1,1)
+      par( mfrow = mfrow, bty = 'n', mar = c(3,4,1,2) )
+      
+    #  scol <- colF(ncol(sensMu))
+        
+        sigma <- sqrt( diag( sigMu )) #sensAlpha, sensRho, sensBeta on sd scale
+        sens  <- cbind(sensMu, sigma)
+        
+        sens <- sens^2
+        
+        sprop <- sweep( sens, 1, rowSums(sens), '/')
+        ord <- order(sprop[,2], decreasing = T)
+        
+        smu <- t(sprop[ord,])
+        smu <- smu[1:(nrow(smu)-1),]
+        #get coloring right 
+    smu2 <- t(smu)  
+    smu2 <- as.data.frame(smu2) 
+    smu2$snames <- rownames(smu2)
+    specs <- as.data.frame(specs)
+    smu2 <- left_join(smu2, specs, by = c("snames"))
+    
+    smu3 <- t(smu2)
+    colnames(smu3) <- smu2$specs
+        smax <- max( colSums(smu) )
+        tmp0 <- barplot( smu, beside = F, col = .getColor(scol, .4), border = scol, xaxt = 'n',
+                        ylim = c(-.5, smax), ylab = 'Proportion of total variance' )
+        tmp0
+        text( tmp0 - .2*diff(tmp0)[1], -.1, colnames(smu), srt = 90, pos = 1, cex=.6, col = as.vector(smu2$specColor))
+      
+      legend("topright", legend =c("Unknown", "Stable", "Rebuilt", "Declining", "Depleted") , pch=16, pt.cex=1, cex=.6, bty='n', col = c("#ababab", "#006ba4", "#8ab8e3", "#ffbc79","#ff800e"))
+     
+      if(nc == 1)text( tmp[1,], 1.05*apply(smu + sse, 2, max), colnames(smu), srt = 75, pos = 4,
+                       cex = .3)
+      mtext( 'Immigration/emigration', side = 1, outer = T, line = -2, adj = .9,
+             col = scol[3])
+      mtext( 'Density dependence', side = 1, outer = T, line = -2, adj = .1,
+             col = scol[1])
+      mtext( 'DI growth', side = 1, outer = T, line = -2, adj = .5,
+             col = scol[2])
+      
+      
+      sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+  
+    
+    
+    
+#ordered by alpha
+sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+    
+sensSe <- outputRB_27[["parameters"]][["sensSe"]]
+sigMu <- outputRB_27[["parameters"]][["sigMu"]]
+sensAlpha <- outputRB_27[["parameters"]][["sensAlpha"]]
+sensRho <- outputRB_27[["parameters"]][["sensRho"]]
+sensBeta <- outputRB_27[["parameters"]][["sensBeta"]]
+
+sensMu <- cbind(sensMu, sensAlpha[,1])
+sensSe <- cbind(sensSe, sensAlpha[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'alpha'
+scol <- c(scol, acol[1])
+
+sensMu <- cbind(sensMu, sensRho[,1])
+sensSe <- cbind(sensSe, sensRho[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'rho'
+scol <- c(scol, acol[2])
+
+sensMu <- cbind(sensMu, sensBeta[,1])
+sensSe <- cbind(sensSe, sensBeta[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'beta'
+    scol <- c(scol, acol[3])
+
+ 
+      
+      nc <- ncol(sensMu)
+ 
+      # total variance
+      # total variance
+      ord <- order(sensMu[,1], decreasing = T)
+      
+      mfrow <- c(1,1)
+      par( mfrow = mfrow, bty = 'n', mar = c(3,4,1,2) )
+      
+    #  scol <- colF(ncol(sensMu))
+        
+        
+        sigma <- sqrt( diag( sigMu )) #sensAlpha, sensRho, sensBeta on sd scale
+        sens  <- cbind(sensMu, sigma)
+        
+        sens <- sens^2
+        
+        sprop <- sweep( sens, 1, rowSums(sens), '/')
+        ord <- order(sprop[,1], decreasing = T) #this is where you change the order
+        
+        smu <- t(sprop[ord,])
+        smu <- smu[1:(nrow(smu)-1),]
+        #get coloring right 
+    smu2 <- t(smu)  
+    smu2 <- as.data.frame(smu2) 
+    smu2$snames <- rownames(smu2)
+    specs <- as.data.frame(specs)
+    smu2 <- left_join(smu2, specs, by = c("snames"))
+    
+    smu3 <- t(smu2)
+    colnames(smu3) <- smu2$specs
+        smax <- max( colSums(smu) )
+        tmp0 <- barplot( smu, beside = F, col = .getColor(scol, .4), border = scol, xaxt = 'n',
+                        ylim = c(-.5, smax), ylab = 'Proportion of total variance' )
+        tmp0
+        text( tmp0 - .2*diff(tmp0)[1], -.1, colnames(smu), srt = 90, pos = 1, cex=.6, col = as.vector(smu2$specColor))
+ legend("topright", legend =c("Unknown", "Stable", "Rebuilt", "Declining", "Depleted") , pch=16, pt.cex=1, cex=.6, bty='n', col = c("#ababab", "#006ba4", "#8ab8e3", "#ffbc79","#ff800e"))
+     
+      if(nc == 1)text( tmp[1,], 1.05*apply(smu + sse, 2, max), colnames(smu), srt = 75, pos = 4,
+                       cex = .3)
+      mtext( 'Immigration/emigration', side = 1, outer = T, line = -2, adj = .9,
+             col = scol[3])
+      mtext( 'Density dependence', side = 1, outer = T, line = -2, adj = .1,
+             col = scol[1])
+      mtext( 'DI growth', side = 1, outer = T, line = -2, adj = .5,
+             col = scol[2])
+      
+      
+      sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+```
+
+##color coded by pelagic vs benthic 
+```{r}
+out <- outputRB_27
+specnames_use <- colnames(out[["inputs"]][["y"]])
+
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_status <- spp_class %>% dplyr::select(COMNAME, depth_profile_pelagic_demersal)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+pelagic <- subset(spp_order_sel, spp_order_sel$depth_profile_pelagic_demersal == "pelagic")
+
+demersal <- subset(spp_order_sel, spp_order_sel$depth_profile_pelagic_demersal == "demersal")
+benthic <- subset(spp_order_sel, spp_order_sel$depth_profile_pelagic_demersal == "benthic")
+
+specGroups <- list(
+  pelagic = c(as.vector(pelagic$COMNAME)), 
+  demersal = c(as.vector(demersal$COMNAME)),
+  benthic = c(as.vector(benthic$COMNAME))
+)
+
+s <- ncol(out[["inputs"]][["y"]])
+specColor <- rep('black', s)
+snames <- colnames(out[["inputs"]][["y"]])
+names(specColor) = snames
+
+cc <- c("#006ba4","#ff800e","#595959")
+
+for(j in 1:length(specGroups)){
+  wj <- which(snames %in% specGroups[[j]])
+  specColor[wj] <- cc[j]
+  names(specColor)[wj] <- names(specGroups)[j]
+}
+
+specs <- cbind(specColor, snames)
+
+
+specColor = specColor 
+#load('gjamOutputXRA_2/output.rdata')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T,specColor = specColor,
+                 outFolder = 'gjamOutputXRA_28')
+gjamPlot(outputRB_27, plotPars)
+
+
+plot(NULL ,xaxt='n',yaxt='n',bty='n',ylab='',xlab='', xlim=0:1, ylim=0:1)
+legend("topleft", legend =c("pelagic", "demersal", "benthic"), pch=16, pt.cex=2.5, cex=1.2, bty='n',
+    col = c("#006ba4","#ff800e","#595959"))
+mtext("Species", at=0.2, cex=2)
+```
+###bar plot
+```{r}
+out <- outputRB_27
+sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+    
+sensSe <- out[["parameters"]][["sensSe"]]
+sigMu <- out[["parameters"]][["sigMu"]]
+sensAlpha <- out[["parameters"]][["sensAlpha"]]
+sensRho <- out[["parameters"]][["sensRho"]]
+sensBeta <- out[["parameters"]][["sensBeta"]]
+
+sensMu <- cbind(sensMu, sensAlpha[,1])
+sensSe <- cbind(sensSe, sensAlpha[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'alpha'
+scol <- c(scol, acol[1])
+
+sensMu <- cbind(sensMu, sensRho[,1])
+sensSe <- cbind(sensSe, sensRho[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'rho'
+scol <- c(scol, acol[2])
+
+sensMu <- cbind(sensMu, sensBeta[,1])
+sensSe <- cbind(sensSe, sensBeta[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'beta'
+scol <- c(scol, acol[3])
+
+ 
+      
+      nc <- ncol(sensMu)
+ 
+      # total variance
+      ord <- order(sensMu[,1], decreasing = T)
+      
+      mfrow <- c(1,1)
+      par( mfrow = mfrow, bty = 'n', mar = c(3,4,1,2) )
+      
+    #  scol <- colF(ncol(sensMu))
+        
+        
+        sigma <- sqrt( diag( sigMu )) #sensAlpha, sensRho, sensBeta on sd scale
+        sens  <- cbind(sensMu, sigma)
+        
+        sens <- sens^2
+        
+        sprop <- sweep( sens, 1, rowSums(sens), '/')
+        ord <- order(sprop[,2], decreasing = T)
+        
+        smu <- t(sprop[ord,])
+        smu <- smu[1:(nrow(smu)-1),]
+        #get coloring right 
+    smu2 <- t(smu)  
+    smu2 <- as.data.frame(smu2) 
+    smu2$snames <- rownames(smu2)
+    specs <- as.data.frame(specs)
+    smu2 <- left_join(smu2, specs, by = c("snames"))
+    
+    smu3 <- t(smu2)
+    colnames(smu3) <- smu2$specs
+        smax <- max( colSums(smu) )
+        tmp0 <- barplot( smu, beside = F, col = .getColor(scol, .4), border = scol, xaxt = 'n',
+                        ylim = c(-.5, smax), ylab = 'Proportion of total variance' )
+        tmp0
+        text( tmp0 - .2*diff(tmp0)[1], -.1, colnames(smu), srt = 90, pos = 1, cex=.6, col = as.vector(smu2$specColor))
+      
+      legend("topright", legend =c("pelagic", "demersal", "benthic"), pch=16, pt.cex=1, cex=.6, bty='n',
+    col =  c("#006ba4","#ff800e","#595959"))
+     
+      if(nc == 1)text( tmp[1,], 1.05*apply(smu + sse, 2, max), colnames(smu), srt = 75, pos = 4,
+                       cex = .3)
+      mtext( 'Immigration/emigration', side = 1, outer = T, line = -2, adj = .9,
+             col = scol[3])
+      mtext( 'Density dependence', side = 1, outer = T, line = -2, adj = .1,
+             col = scol[1])
+      mtext( 'DI growth', side = 1, outer = T, line = -2, adj = .5,
+             col = scol[2])
+      
+      
+      sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+  
+    
+ 
+```
