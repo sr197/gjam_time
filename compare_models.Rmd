@@ -1,0 +1,400 @@
+---
+title: "Compare_models"
+author: "Sarah Roberts"
+date: "1/14/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#setup 
+```{r, echo = F, eval = F}
+install.packages('gjam_2.3.tar.gz',repos=NULL, type='source')
+library(gjam) #it has been working with 2.3.2 but the predictions are weird 
+
+message('loading local clark files...')
+clark <- 'gjamTimeExample-master/clarkFiles/'
+files <- list.files(clark)
+cat('   ')
+message(paste(files, collapse=", "))
+for (f in files) {
+  path <- file.path(clark, f)
+  if (grepl('.R', toupper(f))) source(path)
+  else Rcpp::sourceCpp(path)
+}
+
+library(MASS)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+```
+
+#RMSE 
+I ran I bunch of models in annual_seasonal.rmd and annual_seasonal_morealpha.rmd and I want to compare them based on individual species RMSE and whole model RMSE for the entire community. 
+
+##more interactions from literature 
+```{r}
+load("season/XRA_1/output.rdata")
+load("season/XRA_2/output.rdata")
+load("season/XRA_3/output.rdata")
+load("season/XRA_4/output.rdata")
+load("season/XRA_5/output.rdata")
+seasonal_more_specs_XRA_1 <- XRA_1
+seasonal_more_specs_XRA_2 <- XRA_2
+seasonal_more_specs_XRA_3 <- XRA_3
+seasonal_more_specs_XRA_4 <- XRA_4
+seasonal_more_specs_XRA_5 <- XRA_5
+#didn't run: seasonal_more_specs_XRA_6
+rm(XRA_1, XRA_2, XRA_3, XRA_4, XRA_5)
+load("annual/XRA_1/output.rdata")
+load("annual/XRA_2/output.rdata")
+load("annual/XRA_3/output.rdata")
+load("annual/XRA_4/output.rdata")
+annual_more_specs_XRA_1 <- XRA_1
+annual_more_specs_XRA_2 <- XRA_2
+annual_more_specs_XRA_3 <- XRA_3
+annual_more_specs_XRA_4 <- XRA_4
+rm(XRA_1, XRA_2, XRA_3, XRA_4)
+
+```
+
+get RMSE for all species and total  annual 
+```{r}
+RMSE_tot_annual_more_specs_XRA_1 <- annual_more_specs_XRA_1[["fit"]][["rmspeAll"]]
+RMSE_specs_annual_more_specs_XRA_1 <- as.data.frame(annual_more_specs_XRA_1[["fit"]][["rmspeBySpec"]])
+RMSE_specs_annual_more_specs_XRA_1$specs <- rownames(RMSE_specs_annual_more_specs_XRA_1)
+
+RMSE_tot_annual_more_specs_XRA_2 <- annual_more_specs_XRA_2[["fit"]][["rmspeAll"]]
+RMSE_specs_annual_more_specs_XRA_2 <- as.data.frame(annual_more_specs_XRA_2[["fit"]][["rmspeBySpec"]])
+RMSE_specs_annual_more_specs_XRA_2$specs <- rownames(RMSE_specs_annual_more_specs_XRA_2)
+
+RMSE_tot_annual_more_specs_XRA_3 <- annual_more_specs_XRA_3[["fit"]][["rmspeAll"]]
+RMSE_specs_annual_more_specs_XRA_3 <- as.data.frame(annual_more_specs_XRA_3[["fit"]][["rmspeBySpec"]])
+RMSE_specs_annual_more_specs_XRA_3$specs <- rownames(RMSE_specs_annual_more_specs_XRA_3)
+
+RMSE_tot_annual_more_specs_XRA_4 <- annual_more_specs_XRA_4[["fit"]][["rmspeAll"]]
+RMSE_specs_annual_more_specs_XRA_4 <- as.data.frame(annual_more_specs_XRA_4[["fit"]][["rmspeBySpec"]])
+RMSE_specs_annual_more_specs_XRA_4$specs <- rownames(RMSE_specs_annual_more_specs_XRA_4)
+
+
+
+joined <- left_join(RMSE_specs_annual_more_specs_XRA_4, RMSE_specs_annual_more_specs_XRA_3, by = c("specs"))
+
+joined <- left_join(joined, RMSE_specs_annual_more_specs_XRA_2, by = c("specs"))
+joined <- left_join(joined, RMSE_specs_annual_more_specs_XRA_1, by = c("specs"))
+
+rownames(joined) <- joined$specs
+
+colnames(joined) <- c("lit_annual_most_specs", "specs", "lit_annual_mostcommon+7", "lit_annual_mostcommon+3", "lit_annual_mostcommon")
+
+dat.m <- melt(joined,id.vars='specs', measure.vars=c("lit_annual_most_specs", "lit_annual_mostcommon+7", "lit_annual_mostcommon+3", "lit_annual_mostcommon"))
+
+ggplot(data=dat.m, aes(x=variable, y=value)) + geom_boxplot() 
+#interesting results here 
+
+```
+
+
+```{r}
+RMSE_tot_seasonal_more_specs_XRA_1 <- seasonal_more_specs_XRA_1[["fit"]][["rmspeAll"]]
+RMSE_specs_seasonal_more_specs_XRA_1 <- as.data.frame(seasonal_more_specs_XRA_1[["fit"]][["rmspeBySpec"]])
+RMSE_specs_seasonal_more_specs_XRA_1$specs <- rownames(RMSE_specs_seasonal_more_specs_XRA_1)
+
+RMSE_tot_seasonal_more_specs_XRA_2 <- seasonal_more_specs_XRA_2[["fit"]][["rmspeAll"]]
+RMSE_specs_seasonal_more_specs_XRA_2 <- as.data.frame(seasonal_more_specs_XRA_2[["fit"]][["rmspeBySpec"]])
+RMSE_specs_seasonal_more_specs_XRA_2$specs <- rownames(RMSE_specs_seasonal_more_specs_XRA_2)
+
+RMSE_tot_seasonal_more_specs_XRA_3 <- seasonal_more_specs_XRA_3[["fit"]][["rmspeAll"]]
+RMSE_specs_seasonal_more_specs_XRA_3 <- as.data.frame(seasonal_more_specs_XRA_3[["fit"]][["rmspeBySpec"]])
+RMSE_specs_seasonal_more_specs_XRA_3$specs <- rownames(RMSE_specs_seasonal_more_specs_XRA_3)
+
+RMSE_tot_seasonal_more_specs_XRA_4 <- seasonal_more_specs_XRA_4[["fit"]][["rmspeAll"]]
+RMSE_specs_seasonal_more_specs_XRA_4 <- as.data.frame(seasonal_more_specs_XRA_4[["fit"]][["rmspeBySpec"]])
+RMSE_specs_seasonal_more_specs_XRA_4$specs <- rownames(RMSE_specs_seasonal_more_specs_XRA_4)
+
+RMSE_tot_seasonal_more_specs_XRA_5 <- seasonal_more_specs_XRA_5[["fit"]][["rmspeAll"]]
+RMSE_specs_seasonal_more_specs_XRA_5 <- as.data.frame(seasonal_more_specs_XRA_5[["fit"]][["rmspeBySpec"]])
+RMSE_specs_seasonal_more_specs_XRA_5$specs <- rownames(RMSE_specs_seasonal_more_specs_XRA_5)
+
+
+joined_2 <- left_join(RMSE_specs_seasonal_more_specs_XRA_5, RMSE_specs_seasonal_more_specs_XRA_4, by = c("specs"))
+
+joined_2 <- left_join(joined_2, RMSE_specs_seasonal_more_specs_XRA_3, by = c("specs"))
+joined_2 <- left_join(joined_2, RMSE_specs_seasonal_more_specs_XRA_2, by = c("specs"))
+joined_2 <- left_join(joined_2, RMSE_specs_seasonal_more_specs_XRA_1, by = c("specs"))
+
+rownames(joined_2) <- joined_2$specs
+
+colnames(joined_2) <- c("lit_seasonal_common+3_seasonbeta", "specs", "lit_seasonal_common+3", "lit_seasonal_common_seasonrho", "lit_seasonal_common_seasonbeta", "lit_seasonal_common")
+
+joined_full <- left_join(joined, joined_2, by = c("specs"))
+
+dat.m <- melt(joined_full,id.vars='specs', measure.vars=c("lit_annual_most_specs", "lit_annual_mostcommon+7", "lit_annual_mostcommon+3", "lit_annual_mostcommon", "lit_seasonal_common+3_seasonbeta", "lit_seasonal_common+3", "lit_seasonal_common_seasonrho", "lit_seasonal_common_seasonbeta", "lit_seasonal_common"))
+
+ggplot(data=dat.m, aes(x=variable, y=value)) + geom_boxplot() 
+#interesting results here 
+
+```
+
+
+
+
+
+##just interactions from gut 
+```{r}
+load("season2/XRA_1/output.rdata")
+load("season2/XRA_2/output.rdata")
+load("season2/XRA_3/output.rdata")
+load("season2/XRA_4/output.rdata")
+load("season2/XRA_5/output.rdata")
+seasonal_more_specs_XRA_1 <- XRA_1
+seasonal_more_specs_XRA_2 <- XRA_2
+seasonal_more_specs_XRA_3 <- XRA_3
+seasonal_more_specs_XRA_4 <- XRA_4
+seasonal_more_specs_XRA_5 <- XRA_5
+#didn't run: seasonal_more_specs_XRA_6
+rm(XRA_1, XRA_2, XRA_3, XRA_4, XRA_5)
+load("annual2/XRA_1/output.rdata")
+load("annual2/XRA_2/output.rdata")
+load("annual2/XRA_3/output.rdata")
+load("annual2/XRA_4/output.rdata")
+annual_more_specs_XRA_1 <- XRA_1
+annual_more_specs_XRA_2 <- XRA_2
+annual_more_specs_XRA_3 <- XRA_3
+annual_more_specs_XRA_4 <- XRA_4
+rm(XRA_1, XRA_2, XRA_3, XRA_4)
+
+```
+
+get RMSE for all species and total  annual 
+```{r}
+RMSE_tot_annual_more_specs_XRA_1 <- annual_more_specs_XRA_1[["fit"]][["rmspeAll"]]
+RMSE_specs_annual_more_specs_XRA_1 <- as.data.frame(annual_more_specs_XRA_1[["fit"]][["rmspeBySpec"]])
+RMSE_specs_annual_more_specs_XRA_1$specs <- rownames(RMSE_specs_annual_more_specs_XRA_1)
+
+RMSE_tot_annual_more_specs_XRA_2 <- annual_more_specs_XRA_2[["fit"]][["rmspeAll"]]
+RMSE_specs_annual_more_specs_XRA_2 <- as.data.frame(annual_more_specs_XRA_2[["fit"]][["rmspeBySpec"]])
+RMSE_specs_annual_more_specs_XRA_2$specs <- rownames(RMSE_specs_annual_more_specs_XRA_2)
+
+RMSE_tot_annual_more_specs_XRA_3 <- annual_more_specs_XRA_3[["fit"]][["rmspeAll"]]
+RMSE_specs_annual_more_specs_XRA_3 <- as.data.frame(annual_more_specs_XRA_3[["fit"]][["rmspeBySpec"]])
+RMSE_specs_annual_more_specs_XRA_3$specs <- rownames(RMSE_specs_annual_more_specs_XRA_3)
+
+RMSE_tot_annual_more_specs_XRA_4 <- annual_more_specs_XRA_4[["fit"]][["rmspeAll"]]
+RMSE_specs_annual_more_specs_XRA_4 <- as.data.frame(annual_more_specs_XRA_4[["fit"]][["rmspeBySpec"]])
+RMSE_specs_annual_more_specs_XRA_4$specs <- rownames(RMSE_specs_annual_more_specs_XRA_4)
+
+
+
+joined <- left_join(RMSE_specs_annual_more_specs_XRA_4, RMSE_specs_annual_more_specs_XRA_3, by = c("specs"))
+
+joined <- left_join(joined, RMSE_specs_annual_more_specs_XRA_2, by = c("specs"))
+joined <- left_join(joined, RMSE_specs_annual_more_specs_XRA_1, by = c("specs"))
+
+rownames(joined) <- joined$specs
+
+colnames(joined) <- c("gut_annual_most_specs", "specs", "gut_annual_mostcommon+7", "gut_annual_mostcommon+3", "gut_annual_mostcommon")
+
+dat.m <- melt(joined,id.vars='specs', measure.vars=c("gut_annual_most_specs", "gut_annual_mostcommon+7", "gut_annual_mostcommon+3", "gut_annual_mostcommon"))
+
+ggplot(data=dat.m, aes(x=variable, y=value)) + geom_boxplot() 
+#interesting results here 
+
+```
+
+
+```{r}
+RMSE_tot_seasonal_more_specs_XRA_1 <- seasonal_more_specs_XRA_1[["fit"]][["rmspeAll"]]
+RMSE_specs_seasonal_more_specs_XRA_1 <- as.data.frame(seasonal_more_specs_XRA_1[["fit"]][["rmspeBySpec"]])
+RMSE_specs_seasonal_more_specs_XRA_1$specs <- rownames(RMSE_specs_seasonal_more_specs_XRA_1)
+
+RMSE_tot_seasonal_more_specs_XRA_2 <- seasonal_more_specs_XRA_2[["fit"]][["rmspeAll"]]
+RMSE_specs_seasonal_more_specs_XRA_2 <- as.data.frame(seasonal_more_specs_XRA_2[["fit"]][["rmspeBySpec"]])
+RMSE_specs_seasonal_more_specs_XRA_2$specs <- rownames(RMSE_specs_seasonal_more_specs_XRA_2)
+
+RMSE_tot_seasonal_more_specs_XRA_3 <- seasonal_more_specs_XRA_3[["fit"]][["rmspeAll"]]
+RMSE_specs_seasonal_more_specs_XRA_3 <- as.data.frame(seasonal_more_specs_XRA_3[["fit"]][["rmspeBySpec"]])
+RMSE_specs_seasonal_more_specs_XRA_3$specs <- rownames(RMSE_specs_seasonal_more_specs_XRA_3)
+
+RMSE_tot_seasonal_more_specs_XRA_4 <- seasonal_more_specs_XRA_4[["fit"]][["rmspeAll"]]
+RMSE_specs_seasonal_more_specs_XRA_4 <- as.data.frame(seasonal_more_specs_XRA_4[["fit"]][["rmspeBySpec"]])
+RMSE_specs_seasonal_more_specs_XRA_4$specs <- rownames(RMSE_specs_seasonal_more_specs_XRA_4)
+
+RMSE_tot_seasonal_more_specs_XRA_5 <- seasonal_more_specs_XRA_5[["fit"]][["rmspeAll"]]
+RMSE_specs_seasonal_more_specs_XRA_5 <- as.data.frame(seasonal_more_specs_XRA_5[["fit"]][["rmspeBySpec"]])
+RMSE_specs_seasonal_more_specs_XRA_5$specs <- rownames(RMSE_specs_seasonal_more_specs_XRA_5)
+
+
+joined_2 <- left_join(RMSE_specs_seasonal_more_specs_XRA_5, RMSE_specs_seasonal_more_specs_XRA_4, by = c("specs"))
+
+joined_2 <- left_join(joined_2, RMSE_specs_seasonal_more_specs_XRA_3, by = c("specs"))
+joined_2 <- left_join(joined_2, RMSE_specs_seasonal_more_specs_XRA_2, by = c("specs"))
+joined_2 <- left_join(joined_2, RMSE_specs_seasonal_more_specs_XRA_1, by = c("specs"))
+
+rownames(joined_2) <- joined_2$specs
+
+colnames(joined_2) <- c("gut_seasonal_common+3_seasonbeta", "specs", "gut_seasonal_common+3", "gut_seasonal_common_seasonrho", "gut_seasonal_common_seasonbeta", "gut_seasonal_common")
+
+joined_fuller <- left_join(joined, joined_2, by = c("specs"))
+
+colnames(joined_fuller) <- c("gut_annual_most_specs", "specs", "gut_annual_mostcommon+7", "gut_annual_mostcommon+3", "gut_annual_mostcommon", "gut_seasonal_common+3_seasonbeta", "gut_seasonal_common+3", "gut_seasonal_common_seasonrho", "gut_seasonal_common_seasonbeta", "gut_seasonal_common")
+
+dat.m <- melt(joined_fuller,id.vars='specs', measure.vars=c("gut_annual_most_specs", "gut_annual_mostcommon+7", "gut_annual_mostcommon+3", "gut_annual_mostcommon", "gut_seasonal_common+3_seasonbeta", "gut_seasonal_common+3", "gut_seasonal_common_seasonrho", "gut_seasonal_common_seasonbeta", "gut_seasonal_common"))
+
+ggplot(data=dat.m, aes(x=variable, y=value)) + geom_boxplot() 
+#interesting results here 
+
+```
+
+
+
+
+##all 
+
+```{r}
+joined_fullest <- left_join(joined_fuller, joined_full, by = c("specs"))
+
+dat.m <- melt(joined_fullest,id.vars='specs', measure.vars=c("gut_annual_most_specs", "gut_annual_mostcommon+7", "gut_annual_mostcommon+3", "gut_annual_mostcommon", "gut_seasonal_common+3_seasonbeta", "gut_seasonal_common+3", "gut_seasonal_common_seasonrho", "gut_seasonal_common_seasonbeta", "gut_seasonal_common","lit_annual_most_specs", "lit_annual_mostcommon+7", "lit_annual_mostcommon+3", "lit_annual_mostcommon", "lit_seasonal_common+3_seasonbeta", "lit_seasonal_common+3", "lit_seasonal_common_seasonrho", "lit_seasonal_common_seasonbeta", "lit_seasonal_common"))
+```
+
+```{r}
+ggplot(data=dat.m, aes(x=variable, y=value)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90))
+#interesting results here 
+
+ggplot(data=dat.m, aes(x=variable, y=value)) + geom_boxplot(outlier.size=-1) + scale_y_continuous(limits = c(0, 200)) + theme(axis.text.x = element_text(angle = 90))
+```
+
+#DI and DD 
+compare how much variation is explained by DI and DD with different models 
+
+```{r}
+load("season/XRA_1/output.rdata")
+load("season/XRA_2/output.rdata")
+load("season/XRA_3/output.rdata")
+load("season/XRA_4/output.rdata")
+load("season/XRA_5/output.rdata")
+lit_season_XRA_1 <- XRA_1
+lit_season_XRA_2 <- XRA_2
+lit_season_XRA_3 <- XRA_3
+lit_season_XRA_4 <- XRA_4
+lit_season_XRA_5 <- XRA_5
+#didn't run: seasonal_more_specs_XRA_6
+rm(XRA_1, XRA_2, XRA_3, XRA_4, XRA_5)
+load("annual/XRA_1/output.rdata")
+load("annual/XRA_2/output.rdata")
+load("annual/XRA_3/output.rdata")
+load("annual/XRA_4/output.rdata")
+lit_annual_XRA_1 <- XRA_1
+lit_annual_XRA_2 <- XRA_2
+lit_annual_XRA_3 <- XRA_3
+lit_annual_XRA_4 <- XRA_4
+rm(XRA_1, XRA_2, XRA_3, XRA_4)
+
+load("season2/XRA_1/output.rdata")
+load("season2/XRA_2/output.rdata")
+load("season2/XRA_3/output.rdata")
+load("season2/XRA_4/output.rdata")
+load("season2/XRA_5/output.rdata")
+gut_season_XRA_1 <- XRA_1
+gut_season_XRA_2 <- XRA_2
+gut_season_XRA_3 <- XRA_3
+gut_season_XRA_4 <- XRA_4
+gut_season_XRA_5 <- XRA_5
+#didn't run: seasonal_more_specs_XRA_6
+rm(XRA_1, XRA_2, XRA_3, XRA_4, XRA_5)
+load("annual2/XRA_1/output.rdata")
+load("annual2/XRA_2/output.rdata")
+load("annual2/XRA_3/output.rdata")
+load("annual2/XRA_4/output.rdata")
+gut_annual_XRA_1 <- XRA_1
+gut_annual_XRA_2 <- XRA_2
+gut_annual_XRA_3 <- XRA_3
+gut_annual_XRA_4 <- XRA_4
+rm(XRA_1, XRA_2, XRA_3, XRA_4)
+```
+
+
+##try in a loop 
+
+```{r}
+
+test <- lit_annual_XRA_4
+testy <- test[["parameters"]][["sigMu"]]
+specs <- rownames(testy)
+
+outputs <- list(gut_annual_XRA_1, gut_annual_XRA_2, gut_annual_XRA_3, gut_annual_XRA_4, gut_season_XRA_1, gut_season_XRA_2, gut_season_XRA_3, gut_season_XRA_4, gut_season_XRA_5, lit_annual_XRA_1, lit_annual_XRA_2, lit_annual_XRA_3, lit_annual_XRA_4, lit_season_XRA_1, lit_season_XRA_2, lit_season_XRA_3, lit_season_XRA_4, lit_season_XRA_5)
+
+outnames <- c("gut_annual_XRA_1", "gut_annual_XRA_2", "gut_annual_XRA_3", "gut_annual_XRA_4", "gut_season_XRA_1", "gut_season_XRA_2", "gut_season_XRA_3", "gut_season_XRA_4", "gut_season_XRA_5", "lit_annual_XRA_1", "lit_annual_XRA_2", "lit_annual_XRA_3", "lit_annual_XRA_4", "lit_season_XRA_1", "lit_season_XRA_2", "lit_season_XRA_3", "lit_season_XRA_4", "lit_season_XRA_5")
+
+    
+tot_sprop <- data.frame(matrix(nrow=length(specs), ncol=1))
+colnames(tot_sprop) <- "specs"
+tot_sprop$specs <- specs
+
+
+for (i in 1:length(outputs)) {
+out <- outputs[i]
+sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+sensSe <- out[[1]][["parameters"]][["sensSe"]]
+sigMu <- out[[1]][["parameters"]][["sigMu"]]
+sensAlpha <- out[[1]][["parameters"]][["sensAlpha"]]
+sensRho <- out[[1]][["parameters"]][["sensRho"]]
+sensBeta <- out[[1]][["parameters"]][["sensBeta"]]
+
+sensMu <- cbind(sensMu, sensAlpha[,1])
+sensSe <- cbind(sensSe, sensAlpha[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'alpha'
+scol <- c(scol, acol[1])
+
+sensMu <- cbind(sensMu, sensRho[,1])
+sensSe <- cbind(sensSe, sensRho[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'rho'
+scol <- c(scol, acol[2])
+
+sensMu <- cbind(sensMu, sensBeta[,1])
+sensSe <- cbind(sensSe, sensBeta[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'beta'
+scol <- c(scol, acol[3])
+
+ 
+      
+      nc <- ncol(sensMu)
+ 
+      # total variance
+      ord <- order(sensMu[,1], decreasing = T)
+    #  scol <- colF(ncol(sensMu))
+        
+        sigma <- sqrt( diag( sigMu )) #sensAlpha, sensRho, sensBeta on sd scale
+        sens  <- cbind(sensMu, sigma)
+        
+        sens <- sens^2
+        
+        sprop <- sweep( sens, 1, rowSums(sens), '/')
+        sprop <- as.data.frame(sprop)
+        sensMu <- as.data.frame(sensMu)
+sprop$specs <- rownames(sprop)
+sensMu$spec <- rownames(sensMu)
+names <- outnames[i]
+colnames(sprop) <- paste(names, (colnames(sprop)), sep = "_")
+colnames(sprop)[5] <- c("specs")
+tot_sprop <- left_join(tot_sprop,sprop, by = c("specs"))
+
+}
+    
+#sensMu is on the sensitivity scale 
+#sprop is on the sd scale 
+#I think i need to separate into rho, beta, and alpha proportion of total variance data frames with columns as the model run. Or maybe not im not sure. First i won't separate them. Then I can make a long data frame and seaparte into different columns if I want to. 
+
+```
+
+make that a long table not a wide one 
+
+```{r}
+melth_test <- melt(tot_sprop,id.vars='specs', measure.vars=colnames(tot_sprop[2:ncol(tot_sprop)]))
+
+long_dat <- melth_test %>% separate(variable, into = c("model", "stat"), sep="_(?=[^_]+$)")
+```
+

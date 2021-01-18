@@ -75,7 +75,7 @@ ydata <- ydata1
 
 
 specnames <- colnames(ydata)
-alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- read.csv("alphaSign_filled_1.csv")
 alphaSign <- alphaSign %>% dplyr::select(-X)
 rownames(alphaSign) <- colnames(alphaSign)
 alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
@@ -198,15 +198,15 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 4 ] <- 4
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+modelList <- list(typeNames = 'CA', ng = 8000, burnin = 2000,  
            timeList = timeList, effort = effort) 
 
 #output
 XRA_1 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
 
-plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season2/XRA_1')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season/XRA_1')
 gjamPlot(XRA_1, plotPars)
-save(XRA_1, file='season2/XRA_1/output.rdata')
+save(XRA_1, file='season/XRA_1/output.rdata')
 
 ```
 
@@ -245,15 +245,15 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 4 ] <- 4
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+modelList <- list(typeNames = 'CA', ng = 8000, burnin = 2000,  
            timeList = timeList, effort = effort) 
 
 #output
 XRA_2 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth + season*SST + season*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
 
-plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season2/XRA_2')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season/XRA_2')
 gjamPlot(XRA_2, plotPars)
-save(XRA_2, file='season2/XRA_2/output.rdata')
+save(XRA_2, file='season/XRA_2/output.rdata')
 
 ```
  
@@ -293,15 +293,15 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 4 ] <- 4
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+modelList <- list(typeNames = 'CA', ng = 8000, burnin = 2000,  
            timeList = timeList, effort = effort) 
 
 #output
 XRA_3 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
 
-plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season2/XRA_3')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season/XRA_3')
 gjamPlot(XRA_3, plotPars)
-save(XRA_3, file='season2/XRA_3/output.rdata')
+save(XRA_3, file='season/XRA_3/output.rdata')
 
 ```
 
@@ -346,7 +346,7 @@ ydata <- ydata1
 
 
 specnames <- colnames(ydata)
-alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- read.csv("alphaSign_filled_1.csv")
 alphaSign <- alphaSign %>% dplyr::select(-X)
 rownames(alphaSign) <- colnames(alphaSign)
 alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
@@ -469,15 +469,15 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 4 ] <- 4
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+modelList <- list(typeNames = 'CA', ng = 8000, burnin = 2000,  
            timeList = timeList, effort = effort) 
 
 #output
 XRA_4 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
 
-plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season2/XRA_4')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season/XRA_4')
 gjamPlot(XRA_4, plotPars)
-save(XRA_4, file='season2/XRA_4/output.rdata')
+save(XRA_4, file='season/XRA_4/output.rdata')
 
 ```
 
@@ -516,15 +516,15 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 4 ] <- 4
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+modelList <- list(typeNames = 'CA', ng = 8000, burnin = 2000,  
            timeList = timeList, effort = effort) 
 
 #output
 XRA_5 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth + season*SST + season*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
 
-plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season2/XRA_5')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season/XRA_5')
 gjamPlot(XRA_5, plotPars)
-save(XRA_5, file='season2/XRA_5/output.rdata')
+save(XRA_5, file='season/XRA_5/output.rdata')
 
 ```
  
@@ -564,15 +564,15 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 4 ] <- 4
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+modelList <- list(typeNames = 'CA', ng = 8000, burnin = 2000,  
            timeList = timeList, effort = effort) 
 
 #output
 XRA_6 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
 
-plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season2/XRA_6')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'season/XRA_6')
 gjamPlot(XRA_6, plotPars)
-save(XRA_6, file='season2/XRA_6/output.rdata')
+save(XRA_6, file='season/XRA_6/output.rdata')
 
 ```
 
@@ -639,7 +639,7 @@ ydata1 <- ydata1[, colSums(ydata1 > 10) > 100] #at least 100 tows with 10 indivi
 ydata <- ydata1
 
 specnames <- colnames(ydata)
-alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- read.csv("alphaSign_filled_1.csv")
 alphaSign <- alphaSign %>% dplyr::select(-X)
 rownames(alphaSign) <- colnames(alphaSign)
 alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
@@ -725,7 +725,8 @@ colnames(xdata) <- c("insert","groups","times", "X", "year", "groups2", "depth",
 ```
 ###run 
 ```{r}
-#set priors
+#set prior
+
 # effect on species growth.
 
 rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2) )
@@ -752,15 +753,15 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 4 ] <- 4
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+modelList <- list(typeNames = 'CA', ng = 8000, burnin = 2000,  
            timeList = timeList, effort = effort) 
 
 #output
 XRA_1 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
 
-plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'annual2/XRA_1')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'annual/XRA_1')
 gjamPlot(XRA_1, plotPars)
-save(XRA_1, file='annual2/XRA_1/output.rdata')
+save(XRA_1, file='annual/XRA_1/output.rdata')
 
 ```
 
@@ -814,7 +815,7 @@ ydata1$ANCHOA.HEPSETUS <- ydata$ANCHOA.HEPSETUS
 ydata <- ydata1
 
 specnames <- colnames(ydata)
-alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- read.csv("alphaSign_filled_1.csv")
 alphaSign <- alphaSign %>% dplyr::select(-X)
 rownames(alphaSign) <- colnames(alphaSign)
 alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
@@ -902,6 +903,7 @@ colnames(xdata) <- c("insert","groups","times", "X", "year", "groups2", "depth",
 ```{r}
 #set priors
 
+
 # effect on species growth.
 
 rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2) )
@@ -928,15 +930,15 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 4 ] <- 4
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+modelList <- list(typeNames = 'CA', ng = 8000, burnin = 2000,  
            timeList = timeList, effort = effort) 
 
 #output
 XRA_2 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
 
-plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'annual2/XRA_2')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'annual/XRA_2')
 gjamPlot(XRA_2, plotPars)
-save(XRA_2, file='annual2/XRA_2/output.rdata')
+save(XRA_2, file='annual/XRA_2/output.rdata')
 
 ```
 
@@ -989,7 +991,7 @@ ydata1$ILLEX.ILLECEBROSUS <- ydata$ILLEX.ILLECEBROSUS
 ydata <- ydata1
 
 specnames <- colnames(ydata)
-alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- read.csv("alphaSign_filled_1.csv")
 alphaSign <- alphaSign %>% dplyr::select(-X)
 rownames(alphaSign) <- colnames(alphaSign)
 alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
@@ -1077,6 +1079,7 @@ colnames(xdata) <- c("insert","groups","times", "X", "year", "groups2", "depth",
 ```{r}
 #set priors
 
+
 # effect on species growth.
 
 rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2) )
@@ -1103,20 +1106,19 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 4 ] <- 4
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+modelList <- list(typeNames = 'CA', ng = 8000, burnin = 2000,  
            timeList = timeList, effort = effort) 
 
 #output
 XRA_3 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
 
-plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'annual2/XRA_3')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'annual/XRA_3')
 gjamPlot(XRA_3, plotPars)
-save(XRA_3, file='annual2/XRA_3/output.rdata')
+save(XRA_3, file='annual/XRA_3/output.rdata')
 
 ```
 
 ##XRA_4
-##XRA_3 
 ###setup
 ```{r}
 #xdata
@@ -1164,7 +1166,7 @@ ydata1$ILLEX.ILLECEBROSUS <- ydata$ILLEX.ILLECEBROSUS
 ydata <- ydata1
 
 specnames <- colnames(ydata)
-alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- read.csv("alphaSign_filled_1.csv")
 alphaSign <- alphaSign %>% dplyr::select(-X)
 rownames(alphaSign) <- colnames(alphaSign)
 alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
@@ -1278,15 +1280,15 @@ hi <- timeList$alphaPrior$hi
 hi[hi > 4 ] <- 4
 timeList$alphaPrior$hi <- hi 
 
-modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+modelList <- list(typeNames = 'CA', ng = 8000, burnin = 2000,  
            timeList = timeList, effort = effort) 
 
 #output
 XRA_4 <- .gjam(~  depth + SEDSIZE + SST + SSAL+ chla + SST*depth+ chla*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
 
-plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'annual2/XRA_4')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'annual/XRA_4')
 gjamPlot(XRA_4, plotPars)
-save(XRA_4, file='annual2/XRA_4/output.rdata')
+save(XRA_4, file='annual/XRA_4/output.rdata')
 
 ```
 
