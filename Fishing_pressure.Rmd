@@ -1,0 +1,719 @@
+---
+title: "Fishing_pressure"
+author: "Sarah Roberts"
+date: "1/28/2021"
+output: html_document
+---
+run utilities in gjamTimeExample-master. May need to install gjam and run gjam functions as well. but try just running utilities. Note, its best to go in to the folder, run utilities, then open gjamTime.r and run the first few lines until source(utlities.R)
+
+```{r, echo = F, eval = F}
+install.packages('gjam_2.3.tar.gz',repos=NULL, type='source')
+library(gjam) #it has been working with 2.3.2 but the predictions are weird 
+
+message('loading local clark files...')
+clark <- 'gjamTimeExample-master/clarkFiles/'
+files <- list.files(clark)
+cat('   ')
+message(paste(files, collapse=", "))
+for (f in files) {
+  path <- file.path(clark, f)
+  if (grepl('.R', toupper(f))) source(path)
+  else Rcpp::sourceCpp(path)
+}
+
+library(MASS)
+library(dplyr)
+library(tidyverse)
+```
+
+#Fishing pressure 
+We need to do this now because the number of species changes. So here, I am adding a pre-existing model that I know has the number of species I want. That is the seasonal most common + 7 common prey species. I am going to use only species interactions from the gut content for this test. 
+
+
+I am going to try and add a fishing mortality covariate based on the species, year, and area collected. The area is going to be split into Mid Atlantic (including NC) and New England. I am going to add recreational and commercial fishing together. 
+
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4488883/#pone.0129883.s004
+
+1 Combine recreational and commercial 
+	Group by year, state and spp and summarize (sum) pounds .
+2. Group into geographic units - based on TNC 
+	add column with if else statement 
+	group by that column added 
+3. Add year column (lagged year) 
+
+4. Select out species that we are using 
+
+5. Group into pelagic, demersal, and benthic fishing mortalities 
+	add column based on sticky fish paper 
+	group by that column 
+
+6 Add 3 columns (Fdem, Fpel, Fben) into xdata based on year, and geographic unit. 
+
+##Load Data 
+```{r}
+landings <- read.csv("landings.csv")
+landings$Pounds <- as.numeric(gsub(",", "", landings$Pounds))
+```
+
+
+##Group recreation and commercial into one   
+```{r}
+landings <- landings %>% group_by(Year, State, NMFS.Name) %>% summarise(Pounds = sum(Pounds, na.rm = T))
+```
+
+##group into geographic units.  
+
+Gulf of Maine = Maine, New Hampshire, Massachusetts 
+Southern New England = Rhode Island, Connecticut, New York 
+Mid Atlantic Bight = New Jersey, Deleware, Maryland, Virginia, North Carolina 
+```{r}
+landings$SUBREGION2 <- ifelse(landings$State == "MAINE" | landings$State == "NEW HAMPSHIRE" | landings$State == "MASSACHUSETTS", "Gulf of Maine", ifelse(landings$State == "RHODE ISLAND" | landings$State == "CONNECTICUT" | landings$State == "NEW YORK", "Southern New England", "Mid Atlantic Bight"))
+
+landings <- landings %>% dplyr::select(-State) %>% group_by(Year, NMFS.Name, SUBREGION2) %>% summarise(Pounds = sum(Pounds, na.rm = T))
+```
+
+##add year lag
+```{r}
+landings$Year_to_use <- landings$Year + 1
+```
+
+##make new species column
+```{r}
+landings <- landings %>% separate(NMFS.Name, c("A", "B", "C"), ",")
+cols <- c("A", "B", "C")
+landings_2 <- landings %>% dplyr::select("A", "B", "C")
+
+landings_2$spp <- paste(landings$C, landings$B, landings$A)
+
+landings_2$spp <- gsub("NA", "", landings_2$spp)
+
+landings_2$spp  <- trimws(landings_2$spp , which = c("both"))
+
+landings <- cbind(landings, landings_2$spp)
+
+landings$spp <- landings$...8
+
+landings <- landings %>% dplyr::select(Year, SUBREGION2, Pounds, Year_to_use, spp)
+```
+##get out species to sleect
+
+```{r}
+#load data 
+load('season2/XRA_6/output.rdata')
+spp_class <- read.csv("spp_by_year_selected.csv")
+
+out <- XRA_6
+specnames_use <- colnames(out[["inputs"]][["y"]])
+
+specnames_2 <- gsub("[[:punct:]]", " ", specnames_use) 
+
+landings <- landings[landings$spp %in% specnames_2,]
+
+landings <- left_join(landings, spp_class, by = c("spp" ="COMNAME"))
+```
+
+##create three variables, 
+pelgagic fishing pressure, demersal fishing pressure, benthic fishing pressure 
+
+```{r}
+grouped_landings_2 <- landings %>% dplyr::select(SUBREGION2, Pounds, Year_to_use, depth_profile_pelagic_demersal, spp) %>% group_by(Year_to_use, SUBREGION2, depth_profile_pelagic_demersal) %>% summarise(Fishing_mortality = sum(Pounds, na.rm = T))
+
+grouped_landings_2 <- grouped_landings_2 %>% spread(key = depth_profile_pelagic_demersal, value = Fishing_mortality)
+
+colnames(grouped_landings_2) <- c("Year", "SUBREGION2", "F_benthic_sel", "F_demersal_sel", "F_pelagic_sel")
+```
+
+Okay so now we have demersal, pelagic, and benthic fishing pressure for each year and area. 
+
+can add to xdata (season and annual) - note do this again if you want to use annual. 
+
+season
+```{r}
+xdata_season <- read.csv("xdata_season.csv")
+xdata_gridded <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/xdata_gridded.csv")
+xdata_gridded <- xdata_gridded %>% dplyr::select(groups, SUBREGION2)
+mode <- function(x) { names(which.max(table(x))) }
+region <- xdata_gridded %>% group_by(groups) %>% summarize(SUBREGION2 = mode(SUBREGION2))
+
+xdata <- left_join(xdata_season, region, by = c("groups" = "groups"))
+
+xdata <- xdata %>% dplyr::select(-F_benthic_sel, -F_demersal_sel, -F_pelagic_sel)
+#xdata$SUBREGION2 <- ifelse(xdata$SUBREGION2 =="", "Gulf of Maine", xdata$SUBREGION2)
+#xdata <- xdata %>% rename(times = time)
+#colnames(xdata) <- gsub(pattern = "_", replacement = "", x = colnames(xdata))
+
+
+xdata <- left_join(xdata, grouped_landings_2, by = c("year" = "Year", "SUBREGION2" = "SUBREGION2"))
+
+write.csv(xdata, file = "xdata_season.csv")
+```
+
+annual 
+```{r}
+xdata_an <- read.csv("xdata_an.csv")
+#xdata <- left_join(xdata_an, region, by = c("groups" = "groups"))
+
+
+xdata <- xdata_an %>% dplyr::select(-F_benthic_sel, -F_demersal_sel, -F_pelagic_sel)
+#xdata$SUBREGION2 <- ifelse(xdata$SUBREGION2 =="", "Gulf of Maine", xdata$SUBREGION2)
+#xdata <- xdata %>% rename(times = time)
+colnames(xdata) <- gsub(pattern = "_", replacement = "", x = colnames(xdata))
+
+xdata <- left_join(xdata, grouped_landings_2, by = c("year" = "Year", "SUBREGION2" = "SUBREGION2"))
+
+write.csv(xdata, file = "xdata_an.csv")
+
+```
+
+#START HERE 
+#seasonal 
+##load data 
+```{r}
+xdata_season <- read.csv("xdata_season.csv")
+ydata_season_bio <- read.csv("ydata_season_bio.csv")
+```
+
+##setup 
+seasonal, most common plus 7, season as a predictor in beta (interaction term)
+```{r}
+#xdata
+xdata <- xdata_season
+xdata <- xdata %>% dplyr::select(-X.1, -SUBREGION2, -F_benthic, -F_demersal, -F_pelagic)
+
+#ydata 
+spp_class <- read.csv("spp_by_year_selected.csv")
+specnames <- as.vector(spp_class$SCINAME)
+ydata <- ydata_season_bio
+ydata[is.na(ydata)] <- 0
+
+#select certain years 
+ydata$year <- xdata$year
+
+xdata <- subset(xdata, xdata$year > 1997)
+ydata <- subset(ydata, ydata$year > 1997)
+
+ydata <- ydata %>% dplyr::select(-year)
+xdata$times <- xdata$times - (min(xdata$times)-1)
+
+#hat if I just did ydata with a spec interaction 
+ydata1 <- ydata[,colSums(ydata != 0) > 200] #at least 100 non-zero rows 
+ydata1 <- ydata1[, colSums(ydata1 > 10) > 100] #at least 100 tows with 10 individuals caught 
+
+
+#bay anchovy, jonah crab and atlantic rock crab , round herring, atlantic menhaden and striped anchovy are prey for a lot of species so I am going to add them back in. 
+
+ydata1$ANCHOA.MITCHILLI <- ydata$ANCHOA.MITCHILLI
+ydata1$CANCER.IRRORATUS<- ydata$CANCER.IRRORATUS
+ydata1$CANCER.BOREALIS<- ydata$CANCER.BOREALIS
+ydata1$ETRUMEUS.TERES <- ydata$ETRUMEUS.TERES
+ydata1$BREVOORTIA.TYRANNUS <- ydata$BREVOORTIA.TYRANNUS
+ydata1$ANCHOA.HEPSETUS <- ydata$ANCHOA.HEPSETUS
+ydata1$ILLEX.ILLECEBROSUS <- ydata$ILLEX.ILLECEBROSUS
+
+ydata <- ydata1
+
+
+specnames <- colnames(ydata)
+alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- alphaSign %>% dplyr::select(-X)
+rownames(alphaSign) <- colnames(alphaSign)
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames,]
+specnames <- colnames(alphaSign)
+ydata <- ydata[,colnames(ydata) %in% specnames]
+#lets change the column names in ydata and alphasign to be common names instead of scientific names 
+spec <- as.data.frame(specnames)
+spec$SCINAME <- spec$specnames
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+specnames_2 <- left_join(spec, spp_selected_2, by = "SCINAME")
+specnames_2 <- as.vector(specnames_2$COMNAME)
+colnames(ydata) <- specnames_2
+colnames(alphaSign) <- specnames_2
+rownames(alphaSign) <- specnames_2
+rownames(alphaSign) <- colnames(alphaSign)
+#create edata (when there are no species at all, effort is .001)
+#create edata 
+edata_bio <- ydata
+edata_bio <- ifelse(rowSums(edata_bio>0), 1, .001)
+edata_bio <- matrix(edata_bio, ncol = ncol(ydata), nrow = nrow(ydata))
+colnames(edata_bio) <- colnames(ydata)
+edata <- edata_bio
+
+
+#alphaSign to just species I'm using now
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames_2]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames_2,]
+specnames_2 <- colnames(alphaSign)
+#fill missing times 
+timeCol   <- 'times'
+groupCol  <- 'groups'
+groupVars <- c( 'groups' )
+edata <- as.data.frame(edata) #get weird errors if I don't do this
+ydata <- as.data.frame(ydata)
+xdata <- as.data.frame(xdata)
+
+tmp <- gjamFillMissingTimes(xdata, ydata, edata, groupCol, timeCol,
+                            FILLMEANS = T, groupVars = groupVars,
+                            typeNames = 'CA', missingEffort = .001) 
+
+xdata <- tmp$xdata
+ydata <- tmp$ydata
+edata <- tmp$edata
+edata <- ifelse(is.na(edata), .001,edata)
+tlist <- tmp$timeList
+snames   <- colnames(ydata)
+trueE <- tmp$trueValues
+
+#fixit below
+colnames(xdata) <- c("insert","groups","times", "X", "year", "season", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "chla", "SEDSIZE", "day", "season1", "date", "F_benthic_sel", "F_demersal_sel", "F_pelagic_sel" )
+
+effort <- list(columns = 1:length(snames), values = edata)
+
+#Fill in NAs from xdata here. 
+
+#weird but for some reason the season column is no longer correct 
+xdata$season <- xdata$season_1
+
+#Fill in NAs from xdata here. 
+
+xdata_na <- xdata[is.na(xdata$year), ]
+xdata_na$year <- 1997
+xdata_na$season1 <- as.integer(2)
+#join to the one that has 1997 in it!
+xdata_na <- left_join(xdata_na, xdata_season, by = c("year" = "year", "season1" = "season_1", "groups2" = "groups"))
+
+xdata_na <- xdata_na %>% dplyr::select(insert, groups, times.x, X.x, year, groups2, depth.y, times.y, month.x, NAOJFM.y, AMOyear.y, oisst_full, SSAL_woa_insit, chla.y, SEDSIZE.y, day.y, season1, date.y, F_benthic_sel.y, F_demersal_sel.y, F_pelagic_sel.y)
+
+colnames(xdata_na) <- colnames(xdata)
+xdata_test <- left_join(xdata, xdata_na, by = c("insert" = "insert", "groups" = "groups"))
+
+#ugh there is probably a better way to do this in a for loop but im lazy now
+xdata_test$season1.x <- ifelse(is.na(xdata_test$year.x), xdata_test$season1.y, xdata_test$season1.x)
+xdata_test$depth.x <- ifelse(is.na(xdata_test$depth.x), xdata_test$depth.y, xdata_test$depth.x)
+xdata_test$times2.x <- ifelse(is.na(xdata_test$times2.x), xdata_test$times2.y, xdata_test$times2.x)
+xdata_test$NAOJFM.x <- ifelse(is.na(xdata_test$NAOJFM.x), xdata_test$NAOJFM.y, xdata_test$NAOJFM.x)
+xdata_test$AMOyear.x <- ifelse(is.na(xdata_test$AMOyear.x), xdata_test$AMOyear.y, xdata_test$AMOyear.x)
+xdata_test$SST.x <- ifelse(is.na(xdata_test$SST.x), xdata_test$SST.y, xdata_test$SST.x)
+xdata_test$SSAL.x <- ifelse(is.na(xdata_test$SSAL.x), xdata_test$SSAL.y, xdata_test$SSAL.x)
+xdata_test$chla.x <- ifelse(is.na(xdata_test$chla.x), xdata_test$chla.y, xdata_test$chla.x)
+xdata_test$SEDSIZE.x <- ifelse(is.na(xdata_test$SEDSIZE.x), xdata_test$SEDSIZE.y, xdata_test$SEDSIZE.x)
+xdata_test$F_benthic_sel.x <- ifelse(is.na(xdata_test$F_benthic_sel.x), xdata_test$F_benthic_sel.y, xdata_test$F_benthic_sel.x)
+xdata_test$F_demersal_sel.x <- ifelse(is.na(xdata_test$F_demersal_sel.x), xdata_test$F_demersal_sel.y, xdata_test$F_demersal_sel.x)
+xdata_test$F_pelagic_sel.x <- ifelse(is.na(xdata_test$F_pelagic_sel.x), xdata_test$F_pelagic_sel.y, xdata_test$F_pelagic_sel.x)
+
+xdata <- xdata_test[,1:21]
+colnames(xdata) <- c("insert","groups","times", "X", "year", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "chla", "SEDSIZE", "day", "season1", "date", "Fbenthicsel", "Fdemersalsel", "Fpelagicsel" )
+
+
+```
+
+
+setup 2; with fishing pressure with more species. 
+```{r}
+#xdata
+xdata <- xdata_season
+xdata <- xdata %>% dplyr::select(-X.1, -SUBREGION2, -F_benthic, -F_demersal, -F_pelagic)
+
+#ydata 
+spp_class <- read.csv("spp_by_year_selected.csv")
+specnames <- as.vector(spp_class$SCINAME)
+ydata <- ydata_season_bio
+ydata[is.na(ydata)] <- 0
+
+#select certain years 
+ydata$year <- xdata$year
+
+xdata <- subset(xdata, xdata$year > 1997)
+ydata <- subset(ydata, ydata$year > 1997)
+
+ydata <- ydata %>% dplyr::select(-year)
+xdata$times <- xdata$times - (min(xdata$times)-1)
+
+#hat if I just did ydata with a spec interaction 
+ydata1 <- ydata[,colSums(ydata != 0) > 200] #at least 100 non-zero rows 
+ydata1 <- ydata1[, colSums(ydata1 > 10) > 100] #at least 100 tows with 10 individuals caught 
+
+
+#bay anchovy, jonah crab and atlantic rock crab , round herring, atlantic menhaden and striped anchovy are prey for a lot of species so I am going to add them back in. 
+
+ydata1$ANCHOA.MITCHILLI <- ydata$ANCHOA.MITCHILLI
+ydata1$CANCER.IRRORATUS<- ydata$CANCER.IRRORATUS
+ydata1$CANCER.BOREALIS<- ydata$CANCER.BOREALIS
+ydata1$ETRUMEUS.TERES <- ydata$ETRUMEUS.TERES
+ydata1$BREVOORTIA.TYRANNUS <- ydata$BREVOORTIA.TYRANNUS
+ydata1$ANCHOA.HEPSETUS <- ydata$ANCHOA.HEPSETUS
+ydata1$ILLEX.ILLECEBROSUS <- ydata$ILLEX.ILLECEBROSUS
+
+ydata <- ydata1
+
+
+specnames <- colnames(ydata)
+alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- alphaSign %>% dplyr::select(-X)
+rownames(alphaSign) <- colnames(alphaSign)
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames,]
+specnames <- colnames(alphaSign)
+ydata <- ydata[,colnames(ydata) %in% specnames]
+#lets change the column names in ydata and alphasign to be common names instead of scientific names 
+spec <- as.data.frame(specnames)
+spec$SCINAME <- spec$specnames
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+specnames_2 <- left_join(spec, spp_selected_2, by = "SCINAME")
+specnames_2 <- as.vector(specnames_2$COMNAME)
+colnames(ydata) <- specnames_2
+colnames(alphaSign) <- specnames_2
+rownames(alphaSign) <- specnames_2
+rownames(alphaSign) <- colnames(alphaSign)
+#create edata (when there are no species at all, effort is .001)
+#create edata 
+edata_bio <- ydata
+edata_bio <- ifelse(rowSums(edata_bio>0), 1, .001)
+edata_bio <- matrix(edata_bio, ncol = ncol(ydata), nrow = nrow(ydata))
+colnames(edata_bio) <- colnames(ydata)
+edata <- edata_bio
+
+
+#alphaSign to just species I'm using now
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames_2]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames_2,]
+specnames_2 <- colnames(alphaSign)
+#fill missing times 
+timeCol   <- 'times'
+groupCol  <- 'groups'
+groupVars <- c( 'groups' )
+edata <- as.data.frame(edata) #get weird errors if I don't do this
+ydata <- as.data.frame(ydata)
+xdata <- as.data.frame(xdata)
+
+tmp <- gjamFillMissingTimes(xdata, ydata, edata, groupCol, timeCol,
+                            FILLMEANS = T, groupVars = groupVars,
+                            typeNames = 'CA', missingEffort = .001) 
+
+xdata <- tmp$xdata
+ydata <- tmp$ydata
+edata <- tmp$edata
+edata <- ifelse(is.na(edata), .001,edata)
+tlist <- tmp$timeList
+snames   <- colnames(ydata)
+trueE <- tmp$trueValues
+
+#fixit below
+colnames(xdata) <- c("insert","groups","times", "X", "year", "season", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "chla", "SEDSIZE", "day", "season1", "date", "F_benthic_sel", "F_demersal_sel", "F_pelagic_sel" )
+
+effort <- list(columns = 1:length(snames), values = edata)
+
+#Fill in NAs from xdata here. 
+
+#weird but for some reason the season column is no longer correct 
+xdata$season <- xdata$season_1
+
+#Fill in NAs from xdata here. 
+
+xdata_na <- xdata[is.na(xdata$year), ]
+xdata_na$year <- 1997
+xdata_na$season1 <- as.integer(2)
+#join to the one that has 1997 in it!
+xdata_na <- left_join(xdata_na, xdata_season, by = c("year" = "year", "season1" = "season_1", "groups2" = "groups"))
+
+xdata_na <- xdata_na %>% dplyr::select(insert, groups, times.x, X.x, year, groups2, depth.y, times.y, month.x, NAOJFM.y, AMOyear.y, oisst_full, SSAL_woa_insit, chla.y, SEDSIZE.y, day.y, season1, date.y, F_benthic_sel.y, F_demersal_sel.y, F_pelagic_sel.y)
+
+colnames(xdata_na) <- colnames(xdata)
+xdata_test <- left_join(xdata, xdata_na, by = c("insert" = "insert", "groups" = "groups"))
+
+#ugh there is probably a better way to do this in a for loop but im lazy now
+xdata_test$season1.x <- ifelse(is.na(xdata_test$year.x), xdata_test$season1.y, xdata_test$season1.x)
+xdata_test$depth.x <- ifelse(is.na(xdata_test$depth.x), xdata_test$depth.y, xdata_test$depth.x)
+xdata_test$times2.x <- ifelse(is.na(xdata_test$times2.x), xdata_test$times2.y, xdata_test$times2.x)
+xdata_test$NAOJFM.x <- ifelse(is.na(xdata_test$NAOJFM.x), xdata_test$NAOJFM.y, xdata_test$NAOJFM.x)
+xdata_test$AMOyear.x <- ifelse(is.na(xdata_test$AMOyear.x), xdata_test$AMOyear.y, xdata_test$AMOyear.x)
+xdata_test$SST.x <- ifelse(is.na(xdata_test$SST.x), xdata_test$SST.y, xdata_test$SST.x)
+xdata_test$SSAL.x <- ifelse(is.na(xdata_test$SSAL.x), xdata_test$SSAL.y, xdata_test$SSAL.x)
+xdata_test$chla.x <- ifelse(is.na(xdata_test$chla.x), xdata_test$chla.y, xdata_test$chla.x)
+xdata_test$SEDSIZE.x <- ifelse(is.na(xdata_test$SEDSIZE.x), xdata_test$SEDSIZE.y, xdata_test$SEDSIZE.x)
+xdata_test$F_benthic_sel.x <- ifelse(is.na(xdata_test$F_benthic_sel.x), xdata_test$F_benthic_sel.y, xdata_test$F_benthic_sel.x)
+xdata_test$F_demersal_sel.x <- ifelse(is.na(xdata_test$F_demersal_sel.x), xdata_test$F_demersal_sel.y, xdata_test$F_demersal_sel.x)
+xdata_test$F_pelagic_sel.x <- ifelse(is.na(xdata_test$F_pelagic_sel.x), xdata_test$F_pelagic_sel.y, xdata_test$F_pelagic_sel.x)
+
+xdata <- xdata_test[,1:21]
+colnames(xdata) <- c("insert","groups","times", "X", "year", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "chla", "SEDSIZE", "day", "season1", "date", "Fbenthicsel", "Fdemersalsel", "Fpelagicsel" )
+
+
+```
+
+
+##XRA_1 
+fishing pressure in beta 
+season in rho and betas as interaction with SST and depth 
+```{r}
+#set priors
+xdata$season <- as.factor(xdata$season1)
+#set priors
+xdata$season <- as.factor(xdata$season)
+xdata$Ftotal <- log(xdata$Fbenthicsel + xdata$Fdemersalsel + xdata$Fpelagicsel)
+xdata$Fbenthicsel1 <- log(xdata$Fbenthicsel)
+xdata$Fpelagicsel1 <- log(xdata$Fpelagicsel)
+xdata$Fdemersalsel1 <- log(xdata$Fdemersalsel)
+
+
+# effect on species growth.
+rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2, season = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2, season = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SST = -2, SSAL = -2, chla = -2, season = -2, Fpelagicsel1 = -2, Fbenthicsel1 = -2, Fdemersalsel1 = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2, chla = 2, season = 2, Fpelagicsel1 = 2, Fbenthicsel1 = 2, Fdemersalsel1 = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth + Fbenthicsel1 + Fpelagicsel1 + Fdemersalsel1, formulaRho = as.formula(~  SST + SSAL + chla + season),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+           timeList = timeList, effort = effort) 
+
+#output
+XRA_1 <- .gjam(~  depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth + Fbenthicsel1 + Fpelagicsel1 + Fdemersalsel1, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+save(XRA_1, file='Fishing_pressure/seasonal/XRA_1/output.rdata')
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'Fishing_pressure/seasonal/XRA_1')
+gjamPlot(XRA_1, plotPars)
+
+```
+##XRA_2 
+fishing pressure in beta as interaction 
+season in rho and betas as interaction with SST and depth 
+```{r}
+#set priors
+xdata$season <- as.factor(xdata$season1)
+
+
+# effect on species growth.
+rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2, season = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2, season = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SST = -2, SSAL = -2, chla = -2, season = -2, Fpelagicsel1 = -2, Fbenthicsel1 = -2, Fdemersalsel1 = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2, chla = 2, season = 2, Fpelagicsel1 = 2, Fbenthicsel1 = 2, Fdemersalsel1 = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth + SST*Fbenthicsel1 + SST*Fpelagicsel1 + SST*Fdemersalsel1, formulaRho = as.formula(~  SST + SSAL + chla + season),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+           timeList = timeList, effort = effort) 
+
+#output
+XRA_2 <- .gjam(~  depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth + SST*Fbenthicsel1 + SST*Fpelagicsel1 + SST*Fdemersalsel1, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+save(XRA_2, file='Fishing_pressure/seasonal/XRA_2/output.rdata')
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'Fishing_pressure/seasonal/XRA_2')
+gjamPlot(XRA_2, plotPars)
+
+```
+##XRA_3 
+fishing pressure in rho as interaction term 
+season in rho and betas as interaction with SST and depth 
+get recipricoal condition number error here. Lets try F_total 
+it only works with logging F (either total or separated out in to demersal etc)
+```{r}
+#set priors
+xdata$season <- as.factor(xdata$season)
+xdata$Ftotal <- log(xdata$Fbenthicsel + xdata$Fdemersalsel + xdata$Fpelagicsel)
+xdata$Fbenthicsel1 <- log(xdata$Fbenthicsel)
+xdata$Fpelagicsel1 <- log(xdata$Fpelagicsel)
+xdata$Fdemersalsel1 <- log(xdata$Fdemersalsel)
+
+# effect on species growth.
+rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2, season = -2, Fpelagicsel1 = -2, Fbenthicsel1 = -2, Fdemersalsel1 = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2, season = 2, Fpelagicsel1 = 2, Fbenthicsel1 = 2, Fdemersalsel1 = 2) )
+
+# rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2, season = -2, Ftotal = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2, season = 2, Ftotal = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SST = -2, SSAL = -2, chla = -2, season = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2, chla = 2, season = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth, formulaRho = as.formula(~  SST + SSAL + chla + season + Fpelagicsel1 + Fdemersalsel1 + Fbenthicsel1),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 800, burnin = 100,  
+           timeList = timeList, effort = effort) 
+
+#output
+XRA_3 <- .gjam(~  depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+save(XRA_3, file='Fishing_pressure/seasonal/XRA_3/output.rdata')
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'Fishing_pressure/seasonal/XRA_3')
+gjamPlot(XRA_3, plotPars)
+
+```
+
+##XRA_4
+fishing pressure in rho as interaction with SST 
+season in rho and betas as interaction with SST and depth 
+```{r}
+#set priors
+# effect on species growth.
+rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2, season = -2, Fpelagicsel1 = -2, Fbenthicsel1 = -2, Fdemersalsel1 = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2, season = 2, Fpelagicsel1 = 2, Fbenthicsel1 = 2, Fdemersalsel1 = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SST = -2, SSAL = -2, chla = -2, season = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2, chla = 2, season = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth, formulaRho = as.formula(~  SST + + SSAL + chla + season + SST*Fpelagicsel1 + SST*Fdemersalsel1 + SST*Fbenthicsel1),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 800, burnin = 100,  
+           timeList = timeList, effort = effort) 
+
+#output
+XRA_4 <- .gjam(~  depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+save(XRA_4, file='Fishing_pressure/seasonal/XRA_4/output.rdata')
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'Fishing_pressure/seasonal/XRA_4')
+gjamPlot(XRA_4, plotPars)
+
+```
+
+##XRA_5
+fishing pressure in beta and rho (no interaction)
+```{r}
+#set priors
+# effect on species growth.
+rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2, season = -2, Fpelagicsel1 = -2, Fbenthicsel1 = -2, Fdemersalsel1 = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2, season = 2, Fpelagicsel1 = 2, Fbenthicsel1 = 2, Fdemersalsel1 = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SST = -2, SSAL = -2, chla = -2, season = -2, Fpelagicsel1 = -2, Fbenthicsel1 = -2, Fdemersalsel1 = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2, chla = 2, season = 2, Fpelagicsel1 = 2, Fbenthicsel1 = 2, Fdemersalsel1 = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth, formulaRho = as.formula(~  SST + SSAL + chla + season + Fpelagicsel1 + Fdemersalsel1 + Fbenthicsel1),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 800, burnin = 100,  
+           timeList = timeList, effort = effort) 
+
+#output
+XRA_5 <- .gjam(~  depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth + Fpelagicsel1 + Fdemersalsel1 + Fbenthicsel1, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+save(XRA_5, file='Fishing_pressure/seasonal/XRA_5/output.rdata')
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'Fishing_pressure/seasonal/XRA_5')
+gjamPlot(XRA_5, plotPars)
+
+```
+
+##XRA_6
+fishing pressure in beta and rho (interaction with SST)
+```{r}
+#set priors
+# effect on species growth.
+rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2, season = -2, Fpelagicsel1 = -2, Fbenthicsel1 = -2, Fdemersalsel1 = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2, season = 2, Fpelagicsel1 = 2, Fbenthicsel1 = 2, Fdemersalsel1 = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SST = -2, SSAL = -2, chla = -2, season = -2, Fpelagicsel1 = -2, Fbenthicsel1 = -2, Fdemersalsel1 = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2, chla = 2, season = 2, Fpelagicsel1 = 2, Fbenthicsel1 = 2, Fdemersalsel1 = 2) )
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth, formulaRho = as.formula(~  SST + SSAL + chla + season + Fpelagicsel1 + Fdemersalsel1 + Fbenthicsel1),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 800, burnin = 100,  
+           timeList = timeList, effort = effort) 
+
+#output
+XRA_6 <- .gjam(~  depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth + Fpelagicsel1 + Fdemersalsel1 + Fbenthicsel1, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+save(XRA_4, file='Fishing_pressure/seasonal/XRA_6/output.rdata')
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'Fishing_pressure/seasonal/XRA_6')
+gjamPlot(XRA_6, plotPars)
+
+```
