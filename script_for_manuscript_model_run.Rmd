@@ -1,0 +1,2864 @@
+---
+title: "Code_for_manuscript"
+author: "Sarah Roberts"
+date: "3/31/2021"
+output: html_document
+---
+
+```{r, echo = F, eval = F}
+#install.packages('gjam_2.3.tar.gz',repos=NULL, type='source')
+library(gjam) #it has been working with 2.3.4 
+
+
+message('loading local clark files...')
+clark <- 'gjamTimeExample-master/clarkFiles/'
+files <- list.files(clark)
+cat('   ')
+message(paste(files, collapse=", "))
+for (f in files) {
+  path <- file.path(clark, f)
+  if (grepl('.R', toupper(f))) source(path)
+  else Rcpp::sourceCpp(path)
+}
+
+library(MASS)
+library(dplyr)
+library(tidyverse)
+
+
+kmeansEqualGroups <- function(cvar,minSize,maxSize,progress=T){
+
+  # k-means clustering to approx equal size groups
+  
+  n    <- nrow(cvar)
+  nall <- maxSize*1.5
+  midSize <- mean(c(minSize,maxSize))
+  
+  if(is.null(rownames(cvar)))rownames(cvar) <- c(1:n)
+  
+  cid <- rep(1,n)
+  cvalues <- 0
+  keepRows <- c(1:n)
+  nk <- n
+  nc <- round(n/midSize,0)
+  
+  while(nk > nall){
+    
+    tmp <- kmeans(cvar[keepRows,],nc,iter.max=20)
+    ci <- tmp$cluster 
+    
+    ig   <- which(tmp$size > minSize & tmp$size < maxSize)
+    wg   <- length(ig)
+    
+    if(wg > 0){
+      
+      nb <- 1 + max(cvalues)
+      newVals <- c( nb:(nb + wg - 1) )
+      
+      mm <- match(ci,ig)
+      wm <- which(is.finite(mm))
+      
+      cid[ keepRows[wm] ] <- newVals[ mm[wm] ]
+      
+      cvalues <- c(cvalues,newVals)
+      keepRows <- keepRows[!keepRows %in% keepRows[wm] ]
+      nc <- ceiling( length(keepRows)/midSize )
+      
+    } else {
+      
+      maxSize <- maxSize + 1
+      minSize <- minSize - 1
+    }
+    
+    nk <- length(keepRows)
+    if(progress)print(nk)
+  }
+  
+  allc <- sort(unique(cid))
+  
+  out <- matrix(NA,length(allc),ncol(cvar))
+  rownames(out) <- allc
+  colnames(out) <- colnames(cvar)
+  
+  osd <- out
+  
+  for(k in 1:ncol(cvar)){
+    out[,k] <- tapply(cvar[,k],cid,mean)
+    osd[,k] <- tapply(cvar[,k],cid,sd)
+  }
+  
+  list(cluster = cid, clusterMeans = out, clusterSds = osd)
+}
+
+
+
+```
+#XDATA 
+#Overview
+We noticed there was a lot of data missing in Xdata. We need to fill that in for gjam time to work appropriately. This code is in (Fill_Missing_xdata) 
+
+SST - there was a lot of different ways to go about this but I decided just to use OISST monthly data because it was comprehensive and just came from one source. So the other options would be to do what I did for salinity, so follow that code if you need for sst. 
+Here is how you download that data - https://code.earthengine.google.com/15e8aae07bc9a39e694521791c1b2fc6 
+  1. oisst data (monthly) from GEE
+salinity 
+  1. in situ 
+  2. hycom daily data (from mget)
+  3. in situ average for that month and year and stratum 
+  4. world ocean atlas 1985-1994 climatological data (only added for those years, as they were the ones mainly missing and the WOA data comes in 10 year climatologies. not perfect, but the only real salinity data before 1992 I could find - note hycom stops at 1992)
+
+ChlA
+If we want to run it with ChlA, we need to exclude the early years. Lets try and build the model and see how important it is, it would still be 20 years of data which might be good enough. 
+  1. Seawifs data (monthly) from GEE (1998-2009)
+  2. MODIS data (monthly) from GEE (2003-2019)
+
+#YDATA 
+all specs (biomass and abundance)
+
+
+```{r}
+sumna <- function(x){
+  #acts like sum(na.rm=T) but returns NA if all are NA
+  if(!all(is.na(x))) return(sum(x, na.rm=T))
+  if(all(is.na(x))) return(NA)
+}
+
+
+```
+
+```{r}
+# Compile NEUS ===========================================================
+print("Compile NEUS")
+
+load("neus_Survdat.RData")
+load("neus_SVSPP.RData")
+
+neus_survdat <- survdat %>% 
+  # select specific columns
+  select(CRUISE6, STATION, STRATUM, SVSPP, CATCHSEX, SVVESSEL, YEAR, SEASON, EST_TOWDATE, LAT, LON, DEPTH, SURFTEMP, SURFSALIN, BOTTEMP, BOTSALIN, ABUNDANCE, BIOMASS) %>% 
+  # remove duplicates
+  distinct() %>% 
+  mutate(SVVESSEL = as.character(SVVESSEL), 
+         SEASON = as.character(SEASON))
+
+# sum different sexes of same spp together
+#okay so now we know that the biomass column was given to them as the calibrated cpue
+neus_survdat <- neus_survdat %>% 
+  group_by(YEAR, SEASON, EST_TOWDATE, LAT, LON, DEPTH, CRUISE6, STATION, STRATUM, SVSPP) %>% 
+  summarise(wtcpue = sum(BIOMASS), abd = sum(ABUNDANCE)) 
+
+
+# repeat for spp file 
+neus_spp <- spp %>%
+  # remove some columns from spp data
+  select(-ITISSPP, -COMNAME, -AUTHOR) %>% 
+  mutate(SCINAME = as.character(SCINAME))
+
+files <- as.list(dir(pattern = "neus_strata", path = "data_raw", full.names = T))
+
+neus_strata <- read_csv("neus_strata.csv", col_types = cols(
+  STRGRP_DESC = col_character(),
+  STRATUM = col_double(),
+  STRATUM_NAME = col_character(),
+  STRATUM_AREA = col_double(),
+  MIDLAT = col_double(),
+  MIDLON = col_double(),
+  MINLAT = col_double(),
+  MAXLAT = col_double(),
+  MINLON = col_double(),
+  MAXLON = col_double()
+)) %>% 
+  select(STRATUM, STRATUM_AREA) %>% 
+  distinct()
+
+neus <- left_join(neus_survdat, neus_spp, by = "SVSPP") %>%
+  left_join(neus_strata, by = "STRATUM")
+
+# are there any strata in the data that are not in the strata file?
+# stopifnot(nrow(filter(neus, is.na(STRATUM_AREA))) == 0)
+
+neus <- neus %>%
+  mutate(
+    # Create a unique haulid
+    haulid = paste(formatC(CRUISE6, width=6, flag=0), formatC(STATION, width=3, flag=0), formatC(STRATUM, width=4, flag=0), sep='-'),  
+    # Calculate stratum area where needed (use convex hull approach)
+    # convert square nautical miles to square kilometers
+    stratumarea = STRATUM_AREA * 3.429904) %>% 
+  rename(year = YEAR,
+         date = EST_TOWDATE,
+         spp = SCINAME,
+         lat = LAT, 
+         lon = LON, 
+         depth = DEPTH,
+         stratum = STRATUM) %>%
+  filter(
+    # remove unidentified spp and non-species
+    spp != "" | !is.na(spp), 
+    !grepl("EGG", spp), 
+    !grepl("UNIDENTIFIED", spp)) %>%
+  group_by(haulid, stratum, stratumarea, year, date, lat, lon, depth, spp, SEASON) %>% 
+  summarise(wtcpue = sumna(wtcpue), abd = sumna(abd)) %>% 
+  select(haulid, year, date, lat, lon, stratum, stratumarea, depth, spp, wtcpue, abd, SEASON) %>% 
+  ungroup()
+write.csv(neus, "neus_done_by_sarah_2.csv")
+```
+
+```{r}
+neus <- read.csv("neus_done_by_sarah_adults.csv")
+ocean_adapt <- neus
+```
+###tidy format biomass
+```{r}
+ocean_adapt <- neus
+```
+
+manipulate ocean adapt to be in a tidy format. 
+```{r}
+#this takes about a minute to run
+ocean_adapt <- ocean_adapt %>% dplyr::select(-abd)
+
+ocean_adapt <- ocean_adapt %>% 
+ group_by_at(vars(-wtcpue)) %>% # group by everything other than the value column. 
+ mutate(row_id=1:n()) %>% ungroup() %>% # build group index
+ spread(key=spp, value=wtcpue)  # spread
+
+ydat <- ocean_adapt[,12:ncol(ocean_adapt)]
+ydat$month <- month(ocean_adapt$date)
+ydat$stratum <- ocean_adapt$stratum
+ydat$year <- ocean_adapt$year
+
+#regrid to be monthly
+ydat_2 <- ydat %>% group_by(year, month, stratum) %>% summarise_all(sum, na.rm=TRUE) #adds up biomass per startum per month. 
+
+#divide by number of tows in each stratum/month/year
+
+
+xdat <- xdata_new %>% dplyr::select(month, year, stratum)
+#now fill in the values we have: 
+total_expand <- left_join(xdat, ydat_2, by=c("month", "year", "stratum"))
+
+ydata <- total_expand %>% dplyr::select(-month, -year, -stratum)
+
+write.csv(ydata, "ydata_gridded_biomass_mean.csv")
+```
+
+###Aggregate seasonally 
+```{r}
+
+xdata_new <- read.csv("xdata_added_climatology.csv")
+xdata_new$season <- ifelse(xdata_new$month < 7, "spring", "fall")
+#select out what we are interested in 
+
+xdata_new <- xdata_new %>% dplyr::select(depth, SEDIMENT, groups, times, year.x, month.x, NAOJFM.y, AMOyear.y, oisst_full, SSAL_woa_insit, chla, season, F_benthic, F_demersal, F_pelagic, F_benthic_sel, F_demersal_sel, F_pelagic_sel)
+
+xdata_new$SEDSIZE <- ifelse(xdata_new$SEDIMENT ==  '0 - 0.03 Silt/Mud', .03, 
+                        ifelse(xdata_new$SEDIMENT ==  '0.03 - 0.17 Sand', .17,
+                               ifelse(xdata_new$SEDIMENT ==  '0.17 - 0.35 Sand',.35, 
+                                      ifelse(xdata_new$SEDIMENT ==  '0.35 - 0.36 Sand', .36,
+                                             ifelse(xdata_new$SEDIMENT ==  '0.36 - 0.48 Sand', .48, ifelse(xdata_new$SEDIMENT ==  '0.48+ Coarse Sand to Gravel',.50,NA))))))
+
+
+xdata_new <- xdata_new %>% dplyr::select(-SEDIMENT)
+
+ydata <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/ydata_gridded_biomass_mean.csv")
+
+#need to group by on both x and y because i want to take the mean of x and the sum of y 
+
+ydata$season <- xdata_new$season
+ydata$year <- xdata_new$year
+ydata$groups <- xdata_new$groups
+ydata[ydata == "NaN"] <- NA
+  
+ydata_season <- ydata %>% group_by(year, season, groups) %>% summarise_all(mean, na.rm=TRUE)
+ydata_season_bio <- ydata_season[5:ncol(ydata_season)]
+ydata_season_bio[ydata_season_bio == "NaN"] <- NA
+
+xdata_season <- xdata_new %>% rename(year = year.x) %>% 
+  group_by(year, season, groups) %>% summarise_all(mean, na.rm=TRUE)
+
+
+#add in time column 
+library(lubridate)
+xdata_season$day <- 15
+xdata_season$season_1 <- ifelse(xdata_season$season == "spring", 1, 2)
+xdata_season$date <- paste(xdata_season$year, xdata_season$season_1, xdata_season$day, sep="-") %>% ymd() %>% as.Date()
+
+
+times <- sort(unique(xdata_season$date))
+head(times)
+
+time <- match(xdata_season$date, times)
+head(time)
+table(time)
+
+xdata_season$times <- time
+
+
+
+
+#do the same for abundance 
+
+ydata <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/ydata_gridded_abd.csv")
+
+ydata$season <- xdata_new$season
+ydata$year <- xdata_new$year
+ydata$groups <- xdata_new$groups
+
+ydata_season <- ydata %>% group_by(year, season, groups) %>% summarise_all(sum, na.rm=TRUE)
+ydata_season_abd <- ydata_season[5:ncol(ydata_season)]
+
+
+#do the same for abundance of adults 
+
+ydata <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/ydata_gridded_abd_adult.csv")
+
+ydata$season <- xdata_new$season
+ydata$year <- xdata_new$year
+ydata$groups <- xdata_new$groups
+
+ydata_season <- ydata %>% group_by(year, season, groups) %>% summarise_all(sum, na.rm=TRUE)
+ydata_season_abd_adults <- ydata_season[5:ncol(ydata_season)]
+
+
+write.csv(xdata_season, "xdata_season.csv")
+write.csv(ydata_season_abd, "ydata_season_abd.csv")
+write.csv(ydata_season_abd_adults, "ydata_season_abd_adults.csv")
+
+write.csv(ydata_season_bio, "ydata_season_bio_mean.csv")
+
+```
+
+
+#START HERE 
+#seasonal 
+##load data 
+```{r}
+xdata_season <- read.csv("xdata_season.csv")
+ydata_season_bio <- read.csv("ydata_season_bio_mean.csv")
+```
+
+##setup 
+seasonal, most common plus 7, season as a predictor in beta (interaction term)
+```{r}
+#xdata
+xdata <- xdata_season
+xdata <- xdata %>% dplyr::select(-X.1, -SUBREGION2, -F_benthic, -F_demersal, -F_pelagic)
+
+#ydata 
+spp_class <- read.csv("spp_by_year_selected.csv")
+specnames <- as.vector(spp_class$SCINAME)
+ydata <- ydata_season_bio
+ydata[is.na(ydata)] <- 0
+ydata <- ydata*720 #30 min tows so its kg/ 12 hour day 
+
+#select certain years 
+ydata$year <- xdata$year
+
+xdata <- subset(xdata, xdata$year > 1997)
+ydata <- subset(ydata, ydata$year > 1997)
+
+ydata <- ydata %>% dplyr::select(-year)
+xdata$times <- xdata$times - (min(xdata$times)-1)
+
+#hat if I just did ydata with a spec interaction 
+ydata1 <- ydata[,colSums(ydata != 0) > 200] #at least 100 non-zero rows 
+ydata1 <- ydata1[, colSums(ydata1 > 1) > 500] #at least 200 tows with 10 individuals caught 
+
+
+#bay anchovy, jonah crab and atlantic rock crab , round herring, atlantic menhaden and striped anchovy are prey for a lot of species so I am going to add them back in. 
+
+ydata1$ANCHOA.MITCHILLI <- ydata$ANCHOA.MITCHILLI
+ydata1$CANCER.IRRORATUS<- ydata$CANCER.IRRORATUS
+ydata1$CANCER.BOREALIS<- ydata$CANCER.BOREALIS
+ydata1$ETRUMEUS.TERES <- ydata$ETRUMEUS.TERES
+ydata1$BREVOORTIA.TYRANNUS <- ydata$BREVOORTIA.TYRANNUS
+ydata1$ANCHOA.HEPSETUS <- ydata$ANCHOA.HEPSETUS
+ydata1$ILLEX.ILLECEBROSUS <- ydata$ILLEX.ILLECEBROSUS
+
+ydata <- ydata1
+ydata <- ydata %>% dplyr::select(-X)
+
+specnames <- colnames(ydata)
+alphaSign <- read.csv("alphaSign_filled.csv")
+alphaSign <- alphaSign %>% dplyr::select(-X)
+rownames(alphaSign) <- colnames(alphaSign)
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames,]
+specnames <- colnames(alphaSign)
+ydata <- ydata[,colnames(ydata) %in% specnames]
+#lets change the column names in ydata and alphasign to be common names instead of scientific names 
+spec <- as.data.frame(specnames)
+spec$SCINAME <- spec$specnames
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+specnames_2 <- left_join(spec, spp_selected_2, by = "SCINAME")
+specnames_2 <- as.vector(specnames_2$COMNAME)
+colnames(ydata) <- specnames_2
+colnames(alphaSign) <- specnames_2
+rownames(alphaSign) <- specnames_2
+rownames(alphaSign) <- colnames(alphaSign)
+#create edata (when there are no species at all, effort is .001)
+#create edata 
+edata_bio <- ydata
+edata_bio <- ifelse(rowSums(edata_bio>0), 1, .00001)
+edata_bio <- matrix(edata_bio, ncol = ncol(ydata), nrow = nrow(ydata))
+colnames(edata_bio) <- colnames(ydata)
+edata <- edata_bio
+
+
+#alphaSign to just species I'm using now
+alphaSign <- alphaSign[,colnames(alphaSign) %in% specnames_2]
+alphaSign <- alphaSign[rownames(alphaSign) %in% specnames_2,]
+specnames_2 <- colnames(alphaSign)
+#fill missing times 
+timeCol   <- 'times'
+groupCol  <- 'groups'
+groupVars <- c( 'groups' )
+edata <- as.data.frame(edata) #get weird errors if I don't do this
+ydata <- as.data.frame(ydata)
+xdata <- as.data.frame(xdata)
+
+tmp <- gjamFillMissingTimes(xdata, ydata, edata, groupCol, timeCol,
+                            FILLMEANS = T, groupVars = groupVars,
+                            typeNames = 'CA', missingEffort = .00001) 
+
+xdata <- tmp$xdata
+ydata <- tmp$ydata
+edata <- tmp$edata
+edata <- ifelse(is.na(edata), .00001,edata)
+tlist <- tmp$timeList
+snames   <- colnames(ydata)
+trueE <- tmp$trueValues
+
+#fixit below
+colnames(xdata) <- c("insert","groups","times", "X", "year", "season", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "chla", "SEDSIZE", "day", "season1", "date", "F_benthic_sel", "F_demersal_sel", "F_pelagic_sel" )
+
+effort <- list(columns = 1:length(snames), values = edata)
+
+#Fill in NAs from xdata here. 
+
+#weird but for some reason the season column is no longer correct 
+xdata$season <- xdata$season_1
+
+#Fill in NAs from xdata here. 
+
+xdata_na <- xdata[is.na(xdata$year), ]
+xdata_na$year <- 1997
+xdata_na$season1 <- as.integer(2)
+#join to the one that has 1997 in it!
+xdata_na <- left_join(xdata_na, xdata_season, by = c("year" = "year", "season1" = "season_1", "groups2" = "groups"))
+
+xdata_na <- xdata_na %>% dplyr::select(insert, groups, times.x, X.x, year, groups2, depth.y, times.y, month.x, NAOJFM.y, AMOyear.y, oisst_full, SSAL_woa_insit, chla.y, SEDSIZE.y, day.y, season1, date.y, F_benthic_sel.y, F_demersal_sel.y, F_pelagic_sel.y)
+
+colnames(xdata_na) <- colnames(xdata)
+xdata_test <- left_join(xdata, xdata_na, by = c("insert" = "insert", "groups" = "groups"))
+
+#ugh there is probably a better way to do this in a for loop but im lazy now
+xdata_test$season1.x <- ifelse(is.na(xdata_test$year.x), xdata_test$season1.y, xdata_test$season1.x)
+xdata_test$depth.x <- ifelse(is.na(xdata_test$depth.x), xdata_test$depth.y, xdata_test$depth.x)
+xdata_test$times2.x <- ifelse(is.na(xdata_test$times2.x), xdata_test$times2.y, xdata_test$times2.x)
+xdata_test$NAOJFM.x <- ifelse(is.na(xdata_test$NAOJFM.x), xdata_test$NAOJFM.y, xdata_test$NAOJFM.x)
+xdata_test$AMOyear.x <- ifelse(is.na(xdata_test$AMOyear.x), xdata_test$AMOyear.y, xdata_test$AMOyear.x)
+xdata_test$SST.x <- ifelse(is.na(xdata_test$SST.x), xdata_test$SST.y, xdata_test$SST.x)
+xdata_test$SSAL.x <- ifelse(is.na(xdata_test$SSAL.x), xdata_test$SSAL.y, xdata_test$SSAL.x)
+xdata_test$chla.x <- ifelse(is.na(xdata_test$chla.x), xdata_test$chla.y, xdata_test$chla.x)
+xdata_test$SEDSIZE.x <- ifelse(is.na(xdata_test$SEDSIZE.x), xdata_test$SEDSIZE.y, xdata_test$SEDSIZE.x)
+xdata_test$F_benthic_sel.x <- ifelse(is.na(xdata_test$F_benthic_sel.x), xdata_test$F_benthic_sel.y, xdata_test$F_benthic_sel.x)
+xdata_test$F_demersal_sel.x <- ifelse(is.na(xdata_test$F_demersal_sel.x), xdata_test$F_demersal_sel.y, xdata_test$F_demersal_sel.x)
+xdata_test$F_pelagic_sel.x <- ifelse(is.na(xdata_test$F_pelagic_sel.x), xdata_test$F_pelagic_sel.y, xdata_test$F_pelagic_sel.x)
+
+xdata <- xdata_test[,1:21]
+colnames(xdata) <- c("insert","groups","times", "X", "year", "groups2", "depth","times2", "month", "NAOJFM", "AMOyear", "SST", "SSAL", "chla", "SEDSIZE", "day", "season1", "date", "Fbenthicsel", "Fdemersalsel", "Fpelagicsel" )
+
+#set priors
+xdata$season <- as.factor(xdata$season1)
+#set priors
+xdata$season <- as.factor(xdata$season)
+xdata$Ftotal <- log(xdata$Fbenthicsel + xdata$Fdemersalsel + xdata$Fpelagicsel)
+xdata$Fbenthicsel1 <- log(xdata$Fbenthicsel)
+xdata$Fpelagicsel1 <- log(xdata$Fpelagicsel)
+xdata$Fdemersalsel1 <- log(xdata$Fdemersalsel)
+```
+
+
+
+##XRA_1 
+XRA_2 was 2 hours 
+XRA_3 is 12 hours 
+```{r}
+# effect on species growth.
+rhoPrior <- list(lo = list(intercept = -1, SST = -2, SSAL = -2, chla = -2, season2 = -2, season1 = -2), hi = list(intercept = 2,SST = 2, SSAL = 2, chla = 2, season2 = 2, season1 = 2) )
+
+
+#effect on e/imigration
+betaPrior <- list(lo = list(intercept = -2, SEDSIZE = -2, depth = -2, SST = -2, SSAL = -2, chla = -2, season2 = -2, season1 = -2, `depth:chla` = -2, `depth:SST` = -2, `SST:season2` = -2, `depth:season2` = -2, `SST:season1` = -2, `depth:season1` = -2), hi = list(intercept = 2, SEDSIZE = 2, depth = 2, SST = 2, SSAL = 2, chla = 2, season2 = 2, season1 = 2, `depth:chla` = 2, `depth:SST` = 2, `SST:season2` = 2, `depth:season2` = 2, `SST:season1` = 2, `depth:season1` = 2) )
+
+
+#prior lists  
+priorList <- list( formulaBeta = ~ depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth, formulaRho = as.formula(~  SST + SSAL + chla + season),  
+                   betaPrior = betaPrior, rhoPrior = rhoPrior, alphaSign = alphaSign)
+
+
+tmp <- gjamTimePrior( xdata, ydata, edata, priorList )
+
+timeList <- mergeList(tlist, tmp)
+
+#set limits on alpha priors
+lo <- timeList$alphaPrior$lo
+lo[lo < -4] <- -4
+timeList$alphaPrior$lo <- lo 
+
+hi <- timeList$alphaPrior$hi
+hi[hi > 4 ] <- 4
+timeList$alphaPrior$hi <- hi 
+
+modelList <- list(typeNames = 'CA', ng = 5000, burnin = 1000,  
+           timeList = timeList, effort = effort) 
+
+#output
+XRA_1 <- .gjam(~  depth + SEDSIZE + SST + SSAL + chla  + chla*depth + SST*depth + season*SST + season*depth, xdata=xdata, ydata=ydata, modelList=modelList, verbose=TRUE)
+save(XRA_1, file='Results/seasonal/XRA_3/output.rdata')
+
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = F, SMALLPLOTS = T, GRIDPLOTS = T, outFolder = 'Results/seasonal/XRA_3')
+gjamPlot(XRA_1, plotPars)
+
+```
+
+
+
+
+#Plotting 
+##color coded by pelagic vs benthic 
+```{r}
+#load("Results/seasonal/XRA_1/output.rdata")
+```
+
+```{r}
+out <- XRA_1
+specnames_use <- colnames(out[["inputs"]][["y"]])
+
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_status <- spp_class %>% dplyr::select(COMNAME, depth_profile_pelagic_demersal)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+pelagic <- subset(spp_order_sel, spp_order_sel$depth_profile_pelagic_demersal == "pelagic")
+
+demersal <- subset(spp_order_sel, spp_order_sel$depth_profile_pelagic_demersal == "demersal")
+benthic <- subset(spp_order_sel, spp_order_sel$depth_profile_pelagic_demersal == "benthic")
+
+specGroups <- list(
+  pelagic = c(as.vector(pelagic$COMNAME)), 
+  demersal = c(as.vector(demersal$COMNAME)),
+  benthic = c(as.vector(benthic$COMNAME))
+)
+
+s <- ncol(out[["inputs"]][["y"]])
+specColor <- rep('black', s)
+snames <- colnames(out[["inputs"]][["y"]])
+names(specColor) = snames
+
+cc <- c("#006ba4","#ff800e","#595959")
+
+for(j in 1:length(specGroups)){
+  wj <- which(snames %in% specGroups[[j]])
+  specColor[wj] <- cc[j]
+  names(specColor)[wj] <- names(specGroups)[j]
+}
+
+specs <- cbind(specColor, snames)
+
+
+specColor = specColor 
+#load('gjamOutputXRA_2/output.rdata')
+plotPars <- list(PLOTALLY=T, SAVEPLOTS = T, SMALLPLOTS = T, GRIDPLOTS = T,specColor = specColor,
+                 outFolder = 'Results/seasonal/XRA_2/')
+gjamPlot(out, plotPars)
+
+
+plot(NULL ,xaxt='n',yaxt='n',bty='n',ylab='',xlab='', xlim=0:1, ylim=0:1)
+legend("topleft", legend =c("pelagic", "demersal", "benthic"), pch=16, pt.cex=2.5, cex=1.2, bty='n',
+    col = c("#006ba4","#ff800e","#595959"))
+mtext("Species", at=0.2, cex=2)
+```
+###bar plot
+```{r}
+#out <- outputRB_31
+sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+    
+sensSe <- out[["parameters"]][["sensSe"]]
+sigMu <- out[["parameters"]][["sigMu"]]
+sensAlpha <- out[["parameters"]][["sensAlpha"]]
+sensRho <- out[["parameters"]][["sensRho"]]
+sensBeta <- out[["parameters"]][["sensBeta"]]
+
+sensMu <- cbind(sensMu, sensAlpha[,1])
+sensSe <- cbind(sensSe, sensAlpha[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'alpha'
+scol <- c(scol, acol[1])
+
+sensMu <- cbind(sensMu, sensRho[,1])
+sensSe <- cbind(sensSe, sensRho[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'rho'
+scol <- c(scol, acol[2])
+
+sensMu <- cbind(sensMu, sensBeta[,1])
+sensSe <- cbind(sensSe, sensBeta[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'beta'
+scol <- c(scol, acol[3])
+
+ 
+      
+      nc <- ncol(sensMu)
+ 
+      # total variance
+      ord <- order(sensMu[,1], decreasing = T)
+      
+      mfrow <- c(1,1)
+      par( mfrow = mfrow, bty = 'n', mar = c(3,4,1,2) )
+      
+    #  scol <- colF(ncol(sensMu))
+        
+        
+        sigma <- sqrt( diag( sigMu )) #sensAlpha, sensRho, sensBeta on sd scale
+        sens  <- cbind(sensMu, sigma)
+        
+        sens <- sens^2
+        
+        sprop <- sweep( sens, 1, rowSums(sens), '/')
+        ord <- order(sprop[,2], decreasing = T)
+        
+        smu <- t(sprop[ord,])
+        smu <- smu[1:(nrow(smu)-1),]
+        #get coloring right 
+    smu2 <- t(smu)  
+    smu2 <- as.data.frame(smu2) 
+    smu2$snames <- rownames(smu2)
+    specs <- as.data.frame(specs)
+    smu2 <- left_join(smu2, specs, by = c("snames"))
+    
+    smu3 <- t(smu2)
+    colnames(smu3) <- smu2$specs
+        smax <- max( colSums(smu) )
+        tmp0 <- barplot( smu, beside = F, col = .getColor(scol, .4), border = scol, xaxt = 'n',
+                        ylim = c(-.5, smax), ylab = 'Proportion of total variance' )
+        tmp0
+        text( tmp0 - .2*diff(tmp0)[1], -.1, colnames(smu), srt = 90, pos = 1, cex=.6, col = as.vector(smu2$specColor))
+      
+      legend("topright", legend =c("pelagic", "demersal", "benthic"), pch=16, pt.cex=1, cex=.6, bty='n',
+    col =  c("#006ba4","#ff800e","#595959"))
+     
+      if(nc == 1)text( tmp[1,], 1.05*apply(smu + sse, 2, max), colnames(smu), srt = 75, pos = 4,
+                       cex = .3)
+      mtext( 'Immigration/emigration', side = 1, outer = T, line = -2, adj = .9,
+             col = scol[3])
+      mtext( 'Density dependence', side = 1, outer = T, line = -2, adj = .1,
+             col = scol[1])
+      mtext( 'DI growth', side = 1, outer = T, line = -2, adj = .5,
+             col = scol[2])
+      
+      
+      sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+  
+    
+ 
+```
+
+
+
+#rho sens 
+t(rho)%*%Cov(V)%*%rho
+
+```{r}
+
+rho <- out[["parameters"]][["rhoMu"]]
+V <- out[["parameters"]][["RmatStandXmu"]]
+sensrho <- rho%*%cov(V)
+sensrho <- rho%*%cov(V)%*%t(rho) #wrong dimensions if its written as above
+
+
+
+
+
+```
+
+
+
+```{r}
+maybesens <- diag(sensrho)
+maybesens.d <- as.data.frame(maybesens)
+maybesens$var <- rownames(maybesens)
+
+maybesens.d %>% filter(var!="season2") %>% 
+ggplot() + geom_boxplot(aes(x = var, y = maybesens))
+
+
+beta <- out[["parameters"]][["betaMu"]]
+V <- out[["parameters"]][["betaStandXmu"]]
+
+sensbeta <- beta%*%cov(V)%*%t(beta) #wrong dimensions if its written as above
+maybesens <- diag(sensbeta)
+maybesens.d <- as.data.frame(maybesens)
+maybesens.d$var <- rownames(maybesens.d)
+
+maybesens.d %>% filter(var!="season2") %>% filter(var!="SST:season2") %>% 
+ggplot() + geom_boxplot(aes(x = var, y = maybesens))
+
+
+```
+
+
+standardized rhos 
+```{r}
+srho <- out[["parameters"]][["rhoStandXmu"]]
+srho <- t(srho)
+srho_long <- as.data.frame(srho) %>% mutate (specs = rownames(srho)) %>% gather("variable", "value", intercept:season2)
+
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+srho_long %>% 
+ggplot(aes(y = value, x=specs, fill = variable)) + geom_bar(stat="identity", position = position_dodge(width = 0.9))+ scale_y_continuous(limits = c(-5, 2.5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette)
+
+srho_long %>% filter(variable!="intercept") %>% 
+ggplot(aes(y = abs(value), x=variable)) + geom_boxplot()+ scale_y_continuous(limits = c(0, 2.5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette)
+
+
+```
+betas 
+
+```{r}
+sb <- out[["parameters"]][["betaStandXmu"]]
+sb <- t(sb)
+sb_long <- as.data.frame(sb) %>% mutate (specs = rownames(sb)) %>% gather("variable", "value", intercept:`depth:season2`)
+
+cbPalette <- c("#999999", "#000000", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+sb_long %>% 
+ggplot(aes(y = value, x=specs, fill = variable)) + geom_bar(stat="identity", position = position_dodge(width = 0.9))+ scale_y_continuous(limits = c(-5, 2.5))+ theme(axis.text.x = element_text(angle = 90))
+
+#+scale_fill_manual(values=cbPalette)
+
+```
+
+pull out specific species 
+```{r}
+out <- XRA_5
+srho <- out[["parameters"]][["rhoStandXmu"]]
+srho <- t(srho) 
+
+srho <- as.data.frame(srho)%>% mutate (specs = rownames(srho)) 
+
+
+#match to only show benthic fishing for benthic species 
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_status <- spp_class %>% dplyr::select(COMNAME, depth_profile_pelagic_demersal)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+srho <- left_join(srho, spp_order_sel, by = c("specs"="COMNAME"))
+
+srho$fishing <- srho$Fbenthicsel1 + srho$Fdemersalsel1 + srho$Fpelagicsel1
+
+srho_long <- as.data.frame(srho) %>% dplyr::select(-Fbenthicsel1, -Fdemersalsel1, -Fpelagicsel1) %>% pivot_longer(c(intercept:season2, fishing), names_to = "variable", values_to = "value")
+
+ srho_long%>% filter(variable!="intercept") %>%  
+ggplot(aes(y = value, x=specs, fill = variable)) + geom_bar(stat="identity", position = position_dodge(width = 0.9))+ scale_y_continuous(limits = c(-5, 2.5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette)
+
+
+srho_long %>% filter(specs == "ALEWIFE" | specs == "ATLANTIC.COD" | specs == "GOOSEFISH"| specs == "SEA.RAVEN" | specs == "SMOOTH.DOGFISH"| specs == "LONGHORN.SCULPIN" | specs == "STRIPED.ANCHOVY"| specs == "WINTER.SKATE" | specs == "ROUND.HERRING"| specs == "FOURSPOT.FLOUNDER" | specs == "BAY.ANCHOVY")  %>% filter(variable!="intercept") %>%  
+ggplot(aes(y = value, x=specs, fill = variable)) + geom_bar(stat="identity", position = position_dodge(width = 0.9))+ scale_y_continuous(limits = c(-5, 2.5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette)
+
+srho_long %>% filter(specs == "ATLANTIC.COD" | specs == "SMOOTH.DOGFISH"| specs == "ROUND.HERRING"| specs == "BAY.ANCHOVY")  %>% filter(variable!="intercept") %>%  
+ggplot(aes(y = value, x = "", fill = variable)) + geom_bar(stat="identity", position = position_dodge(width = 0.9))+ scale_y_continuous(limits = c(-4, 3))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette)+ 
+  facet_grid(cols = vars(specs))+ theme_bw(base_size = 10)+ theme(aspect.ratio = 1) + ylab("")+ xlab("")
+```
+
+same as above for betas 
+```{r}
+sb <- out[["parameters"]][["betaStandXWmu"]]
+sb <- t(sb)
+
+sb <- as.data.frame(sb)%>% mutate (specs = rownames(sb)) 
+
+
+#match to only show benthic fishing for benthic species 
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_status <- spp_class %>% dplyr::select(COMNAME, depth_profile_pelagic_demersal)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+sb <- left_join(sb, spp_order_sel, by = c("specs"="COMNAME"))
+sb$Fdemersalsel1[is.na(sb$Fdemersalsel1)] <- 0
+sb$Fpelagicsel1[is.na(sb$Fpelagicsel1)] <- 0
+sb$Fbenthicsel1[is.na(sb$Fbenthicsel1)] <- 0
+
+sb$fishing <- sb$Fbenthicsel1 + sb$Fdemersalsel1 + sb$Fpelagicsel1
+
+sb_long <- as.data.frame(sb) %>% select(-Fbenthicsel1, -Fdemersalsel1, -Fpelagicsel1) %>%
+  pivot_longer(c(depth:season2, fishing), names_to = "variable", values_to = "value")
+
+ sb_long %>% filter(variable!="intercept")%>%  
+ggplot(aes(y = value, x=specs, fill = variable)) + geom_bar(stat="identity", position = position_dodge(width = 0.9))+ scale_y_continuous(limits = c(-.5, .5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette2)
+
+cbPalette2 <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#000000", "#0072B2", "#D55E00", "#CC79A7", "#E69F00", "#56B4E9", "#009E73")
+
+sb_long %>% filter(specs == "ALEWIFE" | specs == "ATLANTIC.COD" | specs == "GOOSEFISH"| specs == "SEA.RAVEN" | specs == "SMOOTH.DOGFISH"| specs == "LONGHORN.SCULPIN" | specs == "STRIPED.ANCHOVY"| specs == "WINTER.SKATE" | specs == "ROUND.HERRING"| specs == "FOURSPOT.FLOUNDER" | specs == "BAY.ANCHOVY") %>% filter(variable!="intercept")%>%  
+ggplot(aes(y = value, x=specs, fill = variable)) + geom_bar(stat="identity", position = position_dodge(width = 0.9))+ scale_y_continuous(limits = c(-.5, .5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette2)
+
+sb_long %>% filter(specs == "ATLANTIC.COD" | specs == "SMOOTH.DOGFISH"| specs == "ROUND.HERRING"| specs == "BAY.ANCHOVY") %>% filter(variable!="intercept")%>%  
+ggplot(aes(y = value, x="", fill = variable)) + geom_bar(stat="identity", position = position_dodge(width = 0.9))+ scale_y_continuous(limits = c(-.5, .5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette2)+ 
+  facet_grid(cols = vars(specs))+
+  theme(panel.spacing = unit(.5, "lines"))+ theme_bw(base_size = 10)+ theme(aspect.ratio = 1) + ylab("")+ xlab("")
+
+```
+
+#species individual graphs
+I;m going to try and simulate figures 4 etc with rho and beta for my dataset 
+https://cdnsciencepub.com/doi/pdf/10.1139/cjfas-2019-0348
+I think this would be a good figure 
+I need to make sure that this value of rho and beta are standardized so I can compare them across species. 
+
+```{r}
+library(stringr)
+rhotable <- out[["parameters"]][["rhoStandXTable"]]
+
+#separate 
+rhotable <- cbind(rhotable, str_split_fixed(rhotable$`rho_{to, from}`, ",", 2))
+
+#need to add just fishing 
+
+
+colnames(rhotable) <- c("rhotofrom","Estimate","SE","CI_025","CI_975","priorLo" , "priorHi", "spp", "variable")
+rhotable$sig <- ifelse(rhotable$CI_975 > 0 & rhotable$CI_025 > 0, "yes", ifelse(rhotable$CI_975 < 0 & rhotable$CI_025 < 0,  "yes", "no"))
+rhotable$Estimate <- ifelse(rhotable$Estimate > 10, 4, rhotable$Estimate)
+rhotable$CI_975 <- ifelse(rhotable$CI_975 > 10, 4, rhotable$CI_975) #to make graphs prettier
+
+
+betatable <- out[["parameters"]][["betaStandXWTable"]]
+
+betatable$info <- rownames(betatable)
+#separate 
+betatable <- cbind(betatable, str_split_fixed(betatable$info, "_", 2))
+
+colnames(betatable) <- c("Estimate","SE","CI_025","CI_975","sig95", "info", "spp", "variable")
+betatable$sig <- ifelse(betatable$CI_975 > 0 & betatable$CI_025 > 0, "yes", ifelse(betatable$CI_975 < 0 & betatable$CI_025 < 0,  "yes", "no"))
+
+
+#do our own graph 
+# function for computing mean, DS, max and min values
+
+ggplot(rhotable, aes(y = Estimate, x = spp, color = sig, shape=sig)) +
+  geom_point() + 
+  geom_errorbar(aes(ymax = CI_025, ymin = CI_975),
+                position = "dodge") + geom_hline(yintercept = 0, linetype = "dashed", size = .5) + facet_grid(~variable, scales = "free")+
+coord_flip()+ scale_color_manual(values=c("#999999", "darkblue")) + scale_shape_manual(values=c(1, 16))+ theme_bw(base_size = 10) 
+
+#do our own graph 
+# function for computing mean, DS, max and min values
+
+ggplot(betatable, aes(y = Estimate, x = spp, color = sig, shape=sig)) +
+  geom_point() + 
+  geom_errorbar(aes(ymax = CI_025, ymin = CI_975),
+                position = "dodge") + geom_hline(yintercept = 0, linetype = "dashed", size = .5) + facet_grid(~variable, scales = "free")+
+coord_flip()+ scale_color_manual(values=c("#999999", "darkblue")) + scale_shape_manual(values=c(1, 16))+ theme_bw(base_size = 10) 
+
+cbPalette3 <- c("darkgreen", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#000000","#000000","#000000", "#0072B2", "#D55E00", "#CC79A7", "#E69F00", "purple", "brown")
+
+ggplot(betatable, aes(y = Estimate, x = variable, color = variable, alpha=sig)) +
+  geom_point() + 
+  geom_errorbar(aes(ymax = CI_025, ymin = CI_975),
+                position = "dodge") + theme_bw(base_size = 10) + scale_color_manual(values=cbPalette3)+ scale_alpha_discrete(range = c(0.2, 1))  + facet_wrap(~spp, nrow = 5,scales = "free") + geom_hline(yintercept = 0, linetype = "dashed", size = .5)+ ylab("")+ xlab("")
+
+cbPalette4 <- c("darkgreen",  "#000000", "#000000", "#000000", "#009E73","#0072B2",  "#E69F00", "purple")
+
+ggplot(rhotable, aes(y = Estimate, x = variable, color = variable, alpha=sig)) +
+  geom_point() + 
+  geom_errorbar(aes(ymax = CI_025, ymin = CI_975),
+                position = "dodge") + theme_bw(base_size = 10) + scale_color_manual(values=cbPalette4)+  scale_alpha_discrete(range = c(0.2, 1))  + facet_wrap(~spp, nrow = 5,scales = "free") + geom_hline(yintercept = 0, linetype = "dashed", size = .5) +scale_fill_manual(values=cbPalette)+ ylab("")+ xlab("")
+
+#try a barplot 
+ggplot(betatable, aes(y = Estimate, x = variable, fill = variable, alpha=sig)) + geom_bar(stat="identity", position = position_dodge(width = 0.9)) +
+  geom_errorbar(aes(ymax = CI_025, ymin = CI_975), color = "gray",
+                position = "dodge") + theme_bw(base_size = 10) + scale_fill_manual(values=cbPalette3)+  scale_alpha_discrete(range = c(0.2, 1))  + facet_wrap(~spp, nrow = 5,scales = "free") + geom_hline(yintercept = 0, linetype = "dashed", size = .5) + ylab("")+ xlab("")+ scale_colour_brewer(palette = "Set1")
+
+
+ggplot(rhotable, aes(y = Estimate, x = variable, fill = variable, alpha=sig)) + geom_bar(stat="identity", position = position_dodge(width = 0.9)) +
+  geom_errorbar(aes(ymax = CI_025, ymin = CI_975), color = "gray",
+                position = "dodge") + theme_bw(base_size = 10) + scale_fill_manual(values=cbPalette4)+  scale_alpha_discrete(range = c(0.2, 1))  + facet_wrap(~spp, nrow = 5,scales = "free") + geom_hline(yintercept = 0, linetype = "dashed", size = .5) + ylab("")+ xlab("")
+
+
+
+```
+#FIGURES
+#load data 
+```{r}
+load("Results/seasonal/XRA_2/output.rdata")
+out <- XRA_1
+snames <- colnames(out[["inputs"]][["y"]])
+
+# load('annual/XRA_4/output.rdata')
+# out <- XRA_4
+# snames <- colnames(out[["inputs"]][["y"]])
+
+
+```
+
+
+#alpha matrix 
+##visualize food web 
+
+run this first 
+```{r}
+foodWebDiagram <- function(S, guildList = NULL, predPrey = NULL, zeroAlpha = NULL,
+                           intraComp = 1:S, label = NULL, PLOT = TRUE, layout = 'rr'){
+  
+  # S - no. species
+  # default interaction is negative, arrows only for negative interactions
+  # guildList - overrides default, only members of the same guild compete
+  # predPrey  - matrix with 2 columns, second column is prey of first column
+  # zeroAlpha - matrix with 2 columns, second column does not affect first column
+  # intraComp - needed for intraspecific comp if guildList is specified
+  # layout can be 'tree', 'rr', ...
+  
+  require( DiagrammeR )
+  
+  pp <- numeric(0)
+  
+  #fromTo <- as.matrix( expand.grid( c(1:S), c(1:S) ) )
+  #ft <- .pasteCols( fromTo )
+
+  fromTo <- expand.grid(spec2,spec2)  #I changed this
+  ft <- .pasteCols( fromTo )#I changed this
+  qq <- numeric(0)
+  if( !is.null(guildList) ){
+    
+    fromTo <- numeric(0)
+    for(k in 1:length(guildList)){
+      ft <- as.matrix(expand.grid(guildList[[k]], guildList[[k]]))
+      fromTo <- rbind(fromTo, ft)
+    }
+    if(!is.null(intraComp)){
+      ft <- cbind(1:S, 1:S)
+      fromTo <- rbind(fromTo, ft)
+    }
+    ft <- .pasteCols( fromTo )
+    ww <- which(!duplicated(ft))
+    ft <- ft[ww]
+    fromTo <- fromTo[ww,]
+    zeroAlpha <- NULL
+  }
+  
+  if(!is.null(predPrey)){
+    pp <- .pasteCols( predPrey[drop=F,,c(2,1)] )
+    qq <- .pasteCols( predPrey)
+    #   fromTo <- fromTo[ !ft %in% pp, ]
+    fromTo <- rbind(fromTo, predPrey, predPrey[drop=F,,c(2,1)])
+    ft <- .pasteCols( fromTo )
+    ww <- which(!duplicated(ft))
+    fromTo <- fromTo[ww,]
+    ft <- ft[ww]
+  }
+  
+  if(!is.null(zeroAlpha)){
+    za <- .pasteCols( zeroAlpha[drop=F,,c(1,2)])
+    
+    fromTo <- fromTo[ !ft %in% za, ]
+    ft <- ft[ !ft %in% za ]
+  }
+  
+  if( length(qq) > 0 ){
+    ft <- .pasteCols( fromTo )
+    fromTo <- rbind( fromTo[ft %in% qq,], fromTo[!ft %in% qq, ] )
+  }
+  ft <- .pasteCols( fromTo )
+  pp <- pp[ pp %in% ft ]
+  
+  if(!PLOT){
+    return( fromTo )
+  }else{
+    ecol  <- rep( mycol, length(ft) )
+    #  ncol  <- rep( 'tan', S )
+    ncol  <- colF(S)
+    shape <- rep( 'rectangle', S)
+    
+    if( length(qq) > 0 ){
+      
+      wt <- which( ft %in% qq )
+      ecol[ wt ] <- 'brown'
+      
+    }
+    if( length(pp) > 0 ){
+      
+      wt <- which( ft %in% pp )
+      ecol[ wt ] <- mycol
+    }
+    
+    if( is.null(layout) )layout <- "tree"
+    if(is.null(label))label <- paste('s', 1:S, sep='')
+    nodes <- create_node_df(n = S, label = label, style = "filled", color = ncol, shape = shape, height = .2, width = .3, fontsize = 3, penwidth=1, peripheries=1)
+    edges <- create_edge_df(from = fromTo[,1], to = fromTo[,2], color = ecol, arrowsize = .25, penwidth = .5 )
+    graph <- create_graph(nodes_df = nodes, edges_df = edges)
+    render_graph( graph,  layout = layout)
+  }
+}
+
+t_col <- function(color, percent = 50, name = NULL) {
+  #      color = color name
+  #    percent = % transparency
+  #       name = an optional name for the color
+
+## Get RGB values for named color
+rgb.val <- col2rgb(color)
+
+## Make new color using input color as base and alpha set by transparency
+t.col <- rgb(rgb.val[1], rgb.val[2], rgb.val[3],
+             max = 255,
+             alpha = (100 - percent) * 255 / 100,
+             names = name)
+
+## Save the color
+invisible(t.col)
+}
+mycol <- t_col("pink", perc = 99, name = "lt.pink")
+```
+
+```{r}
+PredPrey <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/PredPrey.csv")
+predPrey  <- PredPrey[1:2]   # second position is prey of first 
+predPrey$pred_SCINAME <- gsub(pattern = "\xca", replacement = " ", x = predPrey$pred_SCINAME)
+predPrey$PYNAM <- gsub(pattern = "\xca", replacement = " ", x = predPrey$PYNAM)
+
+
+colnames(predPrey) <- c("V1", "V2")
+#remove columns that prey on themselves
+predPrey$V1 <- as.character(predPrey$V1)
+predPrey$V2 <- as.character(predPrey$V2)
+
+predPrey <- predPrey[predPrey$V1 !=predPrey$V2,]
+predPrey$comb_effect <-  paste(predPrey$V1, predPrey$V2, sep = "-")
+
+
+#zero alpha 
+#first get unique combinations of all the species 
+spp_selected <- read.csv("spp_by_year_selected.csv")
+unique_spec <- expand.grid(spp_selected$SCINAME,spp_selected$SCINAME)
+unique_spec$comb_noeffect <- paste(unique_spec$Var1, unique_spec$Var2, sep = "-")
+unique_spec$comb_noeffect2 <- paste(unique_spec$Var2, unique_spec$Var1, sep = "-")
+
+'%ni%' <- Negate('%in%')
+no_effect <- subset(unique_spec, !(unique_spec$comb_noeffect %in% predPrey$comb_effect))
+no_effect2 <- subset(no_effect, !(no_effect$comb_noeffect2 %in% predPrey$comb_effect))
+
+  
+no_effect2$Var1 <- as.character(no_effect2$Var1)
+no_effect2$Var2 <- as.character(no_effect2$Var2)
+
+no_effect <- no_effect2[no_effect2$Var1 !=no_effect2$Var2,]
+no_uni <- no_effect %>%
+ group_by(grp = paste0(pmin(Var1, Var2), pmax(Var1, Var2))) %>%
+ slice(1) %>%
+ ungroup()
+
+zeroAlpha <- no_uni[1:2]
+colnames(zeroAlpha) <- c("Var1", "Var2")
+
+#just get out the ones we are modeling
+spp_selected$COMNAME <- gsub(pattern = " ", replacement = ".", x = spp_selected$COMNAME)
+
+specnames <- spp_selected[spp_selected$COMNAME %in% snames,]
+specnames <- as.vector(specnames$SCINAME)
+
+
+library(DiagrammeR)
+S <- length(specnames) #change this based on how many 
+predPrey <- predPrey[1:2]
+colnames(predPrey) <- c("Var1", "Var2")
+
+
+
+
+##
+
+predPrey <- predPrey[predPrey$Var1 %in% specnames,]
+predPrey <- predPrey[predPrey$Var2 %in% specnames,]
+
+zeroAlpha <- zeroAlpha[zeroAlpha$Var1 %in% specnames,]
+zeroAlpha <- zeroAlpha[zeroAlpha$Var2 %in% specnames,]
+
+
+
+
+#get just the species with pred prey interactions 
+spec2 <- unique(unlist(predPrey))
+zeroAlpha1 <- zeroAlpha[zeroAlpha$Var1 %in% spec2,]
+zeroAlpha1 <- zeroAlpha1[zeroAlpha1$Var2 %in% spec2,]
+
+spec4 <- as.data.frame(spec2)
+spec4$SCINAME <- spec4$spec2
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+#spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+
+spec5 <- left_join(spec4, spp_selected_2, by = "SCINAME")
+spec5 <- as.vector(spec5$COMNAME)
+
+spec3 <- gsub(pattern = ' ', replacement = "\n", x = spec5)
+
+
+
+S = length(spec3) #number in spec3
+foodWebDiagram(S, predPrey = predPrey,zeroAlpha = zeroAlpha1, label = spec3, PLOT = TRUE, layout = 'rxr')
+
+
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+
+
+pred <- predPrey %>% group_by(Var1) %>% count()
+pred <- left_join(pred, spp_selected_2, by = c("Var1" = "SCINAME"))
+
+
+prey <- predPrey %>% group_by(Var2) %>% count()
+prey <- left_join(prey, spp_selected_2, by = c("Var2" = "SCINAME"))
+
+```
+##Post alpha 
+Take the posterior mu of alpha and make a food web out of it.
+
+For some reason the arrows get flipped so run this first 
+```{r}
+foodWebDiagram <- function(S, guildList = NULL, predPrey = NULL, zeroAlpha = NULL,
+                           intraComp = 1:S, label = NULL, PLOT = TRUE, layout = 'rr'){
+  
+  # S - no. species
+  # default interaction is negative, arrows only for negative interactions
+  # guildList - overrides default, only members of the same guild compete
+  # predPrey  - matrix with 2 columns, second column is prey of first column
+  # zeroAlpha - matrix with 2 columns, second column does not affect first column
+  # intraComp - needed for intraspecific comp if guildList is specified
+  # layout can be 'tree', 'rr', ...
+  
+  require( DiagrammeR )
+  
+  pp <- numeric(0)
+  
+  #fromTo <- as.matrix( expand.grid( c(1:S), c(1:S) ) )
+  #ft <- .pasteCols( fromTo )
+
+  fromTo <- expand.grid(spec2,spec2)  #I changed this
+  ft <- .pasteCols( fromTo )#I changed this
+  qq <- numeric(0)
+  if( !is.null(guildList) ){
+    
+    fromTo <- numeric(0)
+    for(k in 1:length(guildList)){
+      ft <- as.matrix(expand.grid(guildList[[k]], guildList[[k]]))
+      fromTo <- rbind(fromTo, ft)
+    }
+    if(!is.null(intraComp)){
+      ft <- cbind(1:S, 1:S)
+      fromTo <- rbind(fromTo, ft)
+    }
+    ft <- .pasteCols( fromTo )
+    ww <- which(!duplicated(ft))
+    ft <- ft[ww]
+    fromTo <- fromTo[ww,]
+    zeroAlpha <- NULL
+  }
+  
+  if(!is.null(predPrey)){
+    pp <- .pasteCols( predPrey[drop=F,,c(2,1)] )
+    qq <- .pasteCols( predPrey)
+    #   fromTo <- fromTo[ !ft %in% pp, ]
+    fromTo <- rbind(fromTo, predPrey, predPrey[drop=F,,c(2,1)])
+    ft <- .pasteCols( fromTo )
+    ww <- which(!duplicated(ft))
+    fromTo <- fromTo[ww,]
+    ft <- ft[ww]
+  }
+  
+  if(!is.null(zeroAlpha)){
+    za <- .pasteCols( zeroAlpha[drop=F,,c(1,2)])
+    
+    fromTo <- fromTo[ !ft %in% za, ]
+    ft <- ft[ !ft %in% za ]
+  }
+  
+  if( length(qq) > 0 ){
+    ft <- .pasteCols( fromTo )
+    fromTo <- rbind( fromTo[ft %in% qq,], fromTo[!ft %in% qq, ] )
+  }
+  ft <- .pasteCols( fromTo )
+  pp <- pp[ pp %in% ft ]
+  
+  if(!PLOT){
+    return( fromTo )
+  }else{
+    ecol  <- rep( mycol, length(ft) )
+    #  ncol  <- rep( 'tan', S )
+    ncol  <- colF(S)
+    shape <- rep( 'rectangle', S)
+    
+    if( length(qq) > 0 ){
+      
+      wt <- which( ft %in% qq )
+      ecol[ wt ] <- 'brown'
+      
+    }
+    if( length(pp) > 0 ){
+      
+      wt <- which( ft %in% pp )
+      ecol[ wt ] <- mycol
+    }
+    
+    if( is.null(layout) )layout <- "tree"
+    if(is.null(label))label <- paste('s', 1:S, sep='')
+    nodes <- create_node_df(n = S, label = label, style = "filled", color = ncol, shape = shape, height = .2, width = .3, fontsize = 3, penwidth=1, peripheries=1)
+    edges <- create_edge_df(from = fromTo[,2], to = fromTo[,1], color = ecol, arrowsize = .25, penwidth = .5 )
+    graph <- create_graph(nodes_df = nodes, edges_df = edges)
+    render_graph( graph,  layout = layout)
+  }
+}
+
+t_col <- function(color, percent = 50, name = NULL) {
+  #      color = color name
+  #    percent = % transparency
+  #       name = an optional name for the color
+
+## Get RGB values for named color
+rgb.val <- col2rgb(color)
+
+## Make new color using input color as base and alpha set by transparency
+t.col <- rgb(rgb.val[1], rgb.val[2], rgb.val[3],
+             max = 255,
+             alpha = (100 - percent) * 255 / 100,
+             names = name)
+
+## Save the color
+invisible(t.col)
+}
+mycol <- t_col("pink", perc = 99, name = "lt.pink")
+```
+
+
+```{r}
+#create predPrey and ZeroAlpha with posterior alpha 
+library(foodweb)
+getwd()
+post_alpha_test <- out[["parameters"]][["alphaMu"]]
+#need to transpose. The rows eat the columns. This function thinks the columns eat the rows
+
+post_alpha <- t(post_alpha_test)
+
+post_alpha <- ifelse(post_alpha>0, 1, 0)
+write.table(post_alpha, "post_alpha.csv", row.names=F, col.names=F, sep=",")
+
+mat.2.list("post_alpha.csv", "post_alpha2.csv")
+# use data to make two columns separated by space pred and prey 
+
+```
+
+I think it is off (don't put in manuscript)
+```{r}
+#start here 
+pred_prey2 <- read.csv("post_alpha2.csv",header = F)
+pred_prey2 <- str_split_fixed(pred_prey2$V1, " ", 2)
+
+colnames(pred_prey2) <- c("Pred", "Prey")
+
+pred_prey2 <- as.data.frame(pred_prey2)
+
+pred_prey2$Pred <- as.numeric(as.character(pred_prey2$Pred))
+pred_prey2$Prey <- as.numeric(as.character(pred_prey2$Prey))
+
+specs <- as.data.frame(colnames(post_alpha))
+specs$num <- 1:nrow(specs)
+
+pred_preya <- left_join(pred_prey2, specs, by = c("Prey" = "num"))
+pred_preya$PRED <- pred_preya$`colnames(post_alpha)`
+
+pred_prey3 <- left_join(pred_preya, specs, by = c("Pred" = "num"))
+pred_prey3$PREY <- pred_prey3$`colnames(post_alpha).y`
+
+pred_prey3$V1 <- pred_prey3$PRED
+pred_prey3$V2 <- pred_prey3$PREY
+
+
+predPrey  <- pred_prey3[7:8]   # second position is prey of first 
+colnames(predPrey) <- c("V1", "V2")
+#remove columns that prey on themselves
+predPrey$V1 <- as.character(predPrey$V1)
+predPrey$V2 <- as.character(predPrey$V2)
+
+predPrey <- predPrey[predPrey$V1 !=predPrey$V2,]
+predPrey$comb_effect <-  paste(predPrey$V1, predPrey$V2, sep = "-")
+
+
+#zero alpha 
+#first get unique combinations of all the species 
+spp_selected <- read.csv("spp_by_year_selected.csv")
+unique_spec <- expand.grid(spp_selected$COMNAME,spp_selected$COMNAME)
+unique_spec$comb_noeffect <- paste(unique_spec$Var1, unique_spec$Var2, sep = "-")
+unique_spec$comb_noeffect2 <- paste(unique_spec$Var2, unique_spec$Var1, sep = "-")
+
+'%ni%' <- Negate('%in%')
+no_effect <- subset(unique_spec, !(unique_spec$comb_noeffect %in% predPrey$comb_effect))
+no_effect2 <- subset(no_effect, !(no_effect$comb_noeffect2 %in% predPrey$comb_effect))
+
+  
+no_effect2$Var1 <- as.character(no_effect2$Var1)
+no_effect2$Var2 <- as.character(no_effect2$Var2)
+
+no_effect <- no_effect2[no_effect2$Var1 !=no_effect2$Var2,]
+no_uni <- no_effect %>%
+ group_by(grp = paste0(pmin(Var1, Var2), pmax(Var1, Var2))) %>%
+ slice(1) %>%
+ ungroup()
+
+zeroAlpha <- no_uni[1:2]
+colnames(zeroAlpha) <- c("Var1", "Var2")
+
+library(DiagrammeR)
+S <- length(specnames) #change this based on how many 
+predPrey <- predPrey[1:2]
+colnames(predPrey) <- c("Var1", "Var2")
+
+#just get out the ones we are modeling
+spp_selected$COMNAME <- gsub(pattern = " ", replacement = ".", x = spp_selected$COMNAME)
+
+specnames <- spp_selected[spp_selected$COMNAME %in% snames,]
+specnames <- as.vector(specnames$COMNAME)
+
+
+##
+predPrey$Var1 <- gsub(pattern = " ", replacement = ".", x = predPrey$Var1)
+predPrey$Var2 <- gsub(pattern = " ", replacement = ".", x = predPrey$Var2)
+
+predPrey <- predPrey[predPrey$Var1 %in% specnames,]
+predPrey <- predPrey[predPrey$Var2 %in% specnames,]
+
+zeroAlpha$Var1 <- gsub(pattern = " ", replacement = ".", x = zeroAlpha$Var1)
+zeroAlpha$Var2 <- gsub(pattern = " ", replacement = ".", x = zeroAlpha$Var2)
+
+zeroAlpha <- zeroAlpha[zeroAlpha$Var1 %in% specnames,]
+zeroAlpha <- zeroAlpha[zeroAlpha$Var2 %in% specnames,]
+
+
+
+
+#get just the species with pred prey interactions 
+spec2 <- unique(unlist(predPrey))
+zeroAlpha1 <- zeroAlpha[zeroAlpha$Var1 %in% spec2,]
+zeroAlpha1 <- zeroAlpha1[zeroAlpha1$Var2 %in% spec2,]
+
+spec4 <- as.data.frame(spec2)
+spec4$COMNAME <- spec4$spec2
+
+#spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+
+spec5 <- as.vector(spec4$COMNAME)
+
+spec3 <- gsub(pattern = '.', replacement = "\n", x = spec5, fixed = TRUE)
+
+
+
+S = length(spec3) #number in spec3
+foodWebDiagram(S, predPrey = predPrey,zeroAlpha = zeroAlpha1, label = spec3, PLOT = TRUE, layout = 'rxr')
+
+#This looks pretty sparse 
+#where is smooth dogfish?
+```
+
+
+
+#visualize bar plot
+
+color coded by overfishing status 
+
+setup 
+```{r}
+specnames_use <- colnames(out[["inputs"]][["y"]])
+
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_status <- spp_class %>% dplyr::select(COMNAME, stock_status)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+
+Unknown <- subset(spp_order_sel, spp_order_sel$stock_status == "unknown")
+
+Stable <- subset(spp_order_sel, spp_order_sel$stock_status == "stable ")
+
+Declining <- subset(spp_order_sel, spp_order_sel$stock_status == "declining ")
+
+Depleted <- subset(spp_order_sel, spp_order_sel$stock_status == "depleted ")
+
+Rebuilt <- subset(spp_order_sel, spp_order_sel$stock_status == "rebuilt")
+
+specGroups <- list(
+  Unknown = c(as.vector(Unknown$COMNAME)), 
+  Stable = c(as.vector(Stable$COMNAME)),
+  Rebuilt = c(as.vector(Rebuilt$COMNAME)),
+  Declining = c(as.vector(Declining$COMNAME)),
+  Depleted = c(as.vector(Depleted$COMNAME))
+)
+
+
+s <- ncol(out[["inputs"]][["y"]])
+specColor <- rep('black', s)
+snames <- colnames(out[["inputs"]][["y"]])
+names(specColor) = snames
+
+cc <- c("#ababab", "#006ba4", "#8ab8e3", "#ffbc79","#ff800e")
+
+for(j in 1:length(specGroups)){
+  wj <- which(snames %in% specGroups[[j]])
+  specColor[wj] <- cc[j]
+  names(specColor)[wj] <- names(specGroups)[j]
+}
+
+specs <- cbind(specColor, snames)
+
+
+```
+
+##run 
+```{r}
+
+sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+    
+sensSe <- out[["parameters"]][["sensSe"]]
+sigMu <- out[["parameters"]][["sigMu"]]
+sensAlpha <- out[["parameters"]][["sensAlpha"]]
+sensRho <- out[["parameters"]][["sensRho"]]
+sensBeta <- out[["parameters"]][["sensBeta"]]
+
+sensMu <- cbind(sensMu, sensAlpha[,1])
+sensSe <- cbind(sensSe, sensAlpha[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'alpha'
+scol <- c(scol, acol[1])
+
+sensMu <- cbind(sensMu, sensRho[,1])
+sensSe <- cbind(sensSe, sensRho[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'rho'
+scol <- c(scol, acol[2])
+
+sensMu <- cbind(sensMu, sensBeta[,1])
+sensSe <- cbind(sensSe, sensBeta[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'beta'
+scol <- c(scol, acol[3])
+
+ 
+      
+      nc <- ncol(sensMu)
+ 
+      # total variance
+      ord <- order(sensMu[,1], decreasing = T)
+      
+      mfrow <- c(1,1)
+      par( mfrow = mfrow, bty = 'n', mar = c(3,4,1,2) )
+      
+    #  scol <- colF(ncol(sensMu))
+        
+        sigma <- sqrt( diag( sigMu )) #sensAlpha, sensRho, sensBeta on sd scale
+        sens  <- cbind(sensMu, sigma)
+        
+        sens <- sens^2
+        
+        sprop <- sweep( sens, 1, rowSums(sens), '/')
+        ord <- order(sprop[,2], decreasing = T)
+        
+        smu <- t(sprop[ord,])
+        smu <- smu[1:(nrow(smu)-1),]
+        #get coloring right 
+    smu2 <- t(smu)  
+    smu2 <- as.data.frame(smu2) 
+    smu2$snames <- rownames(smu2)
+    specs <- as.data.frame(specs)
+    smu2 <- left_join(smu2, specs, by = c("snames"))
+    
+    #get names uncap
+    smu5 <- smu
+    colnames(smu5) <- tolower(colnames(smu5))
+    colnames(smu5) <- gsub(pattern = "\\.", replacement = " ", colnames(smu5))
+    
+    smu3 <- t(smu2)
+    colnames(smu3) <- smu2$specs
+        smax <- max( colSums(smu) )
+        tmp0 <- barplot( smu, beside = F, col = .getColor(scol, .4), border = scol, xaxt = 'n',
+                        ylim = c(-.5, smax), ylab = 'Proportion of total variance' )
+        tmp0
+        text( tmp0 - .2*diff(tmp0)[1], -.1, colnames(smu5), srt = 90, pos = 1, cex=.6, col = as.vector(smu2$specColor))
+      
+      legend("topright", legend =c("Unknown", "Stable", "Rebuilt", "Declining", "Depleted") , pch=16, pt.cex=1, cex=.6, bty='n', col = c("#ababab", "#006ba4", "#8ab8e3", "#ffbc79","#ff800e"))
+     
+      if(nc == 1)text( tmp[1,], 1.05*apply(smu + sse, 2, max), colnames(smu), srt = 75, pos = 4,
+                       cex = .3)
+      mtext( 'Immigration/emigration', side = 1, outer = T, line = -2, adj = .9,
+             col = scol[3])
+      mtext( 'Density dependence', side = 1, outer = T, line = -2, adj = .1,
+             col = scol[1])
+      mtext( 'DI growth', side = 1, outer = T, line = -2, adj = .5,
+             col = scol[2])
+      
+      
+      sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+  
+    
+    
+    
+#ordered by alpha
+sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+    
+sensSe <- out[["parameters"]][["sensSe"]]
+sigMu <- out[["parameters"]][["sigMu"]]
+sensAlpha <- out[["parameters"]][["sensAlpha"]]
+sensRho <- out[["parameters"]][["sensRho"]]
+sensBeta <- out[["parameters"]][["sensBeta"]]
+
+sensMu <- cbind(sensMu, sensAlpha[,1])
+sensSe <- cbind(sensSe, sensAlpha[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'alpha'
+scol <- c(scol, acol[1])
+
+sensMu <- cbind(sensMu, sensRho[,1])
+sensSe <- cbind(sensSe, sensRho[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'rho'
+scol <- c(scol, acol[2])
+
+sensMu <- cbind(sensMu, sensBeta[,1])
+sensSe <- cbind(sensSe, sensBeta[,1])
+colnames(sensMu)[ncol(sensMu)] <- colnames(sensSe)[ncol(sensMu)] <- 'beta'
+    scol <- c(scol, acol[3])
+
+ 
+      
+      nc <- ncol(sensMu)
+ 
+      # total variance
+      # total variance
+      ord <- order(sensMu[,1], decreasing = T)
+      
+      mfrow <- c(1,1)
+      par( mfrow = mfrow, bty = 'n', mar = c(3,4,1,2) )
+      
+    #  scol <- colF(ncol(sensMu))
+        
+        
+        sigma <- sqrt( diag( sigMu )) #sensAlpha, sensRho, sensBeta on sd scale
+        sens  <- cbind(sensMu, sigma)
+        
+        sens <- sens^2
+        
+        sprop <- sweep( sens, 1, rowSums(sens), '/')
+        ord <- order(sprop[,1], decreasing = T) #this is where you change the order [,2]
+        
+        smu <- t(sprop[ord,])
+        smu <- smu[1:(nrow(smu)-1),]
+        #get coloring right 
+    smu2 <- t(smu)  
+    smu2 <- as.data.frame(smu2) 
+    smu2$snames <- rownames(smu2)
+    specs <- as.data.frame(specs)
+    smu2 <- left_join(smu2, specs, by = c("snames"))
+    
+    smu5 <- smu
+    colnames(smu5) <- tolower(colnames(smu5))
+    colnames(smu5) <- gsub(pattern = "\\.", replacement = " ", colnames(smu5))
+    
+    
+    smu3 <- t(smu2)
+    colnames(smu3) <- smu2$specs
+        smax <- max( colSums(smu) )
+        tmp0 <- barplot( smu, beside = F, col = .getColor(scol, .4), border = scol, xaxt = 'n',
+                        ylim = c(-.5, smax), ylab = 'Proportion of total variance' )
+        tmp0
+        text( tmp0 - .2*diff(tmp0)[1], -.1, colnames(smu5), srt = 90, pos = 1, cex=.6)
+     
+      if(nc == 1)text( tmp[1,], 1.05*apply(smu + sse, 2, max), colnames(smu), srt = 75, pos = 4,
+                       cex = .3)
+      mtext( 'Immigration/emigration', side = 1, outer = T, line = -2, adj = .9,
+             col = scol[3])
+      mtext( 'Density dependence', side = 1, outer = T, line = -2, adj = .1,
+             col = scol[1])
+      mtext( 'DI growth', side = 1, outer = T, line = -2, adj = .5,
+             col = scol[2])
+      
+      
+      sensMu <- sensSe <- numeric(0)
+    acol <- colF(3)
+    scol <- character(0)
+```
+
+#get spec pallets 
+```{r}
+specnames_use <- colnames(out[["inputs"]][["y"]])
+
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_status <- spp_class %>% dplyr::select(COMNAME, stock_status)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+
+Unknown <- subset(spp_order_sel, spp_order_sel$stock_status == "unknown")
+
+Stable <- subset(spp_order_sel, spp_order_sel$stock_status == "stable ")
+
+Declining <- subset(spp_order_sel, spp_order_sel$stock_status == "declining ")
+
+Depleted <- subset(spp_order_sel, spp_order_sel$stock_status == "depleted ")
+
+Rebuilt <- subset(spp_order_sel, spp_order_sel$stock_status == "rebuilt")
+
+specGroups <- list(
+  Unknown = c(as.vector(Unknown$COMNAME)), 
+  Stable = c(as.vector(Stable$COMNAME)),
+  Rebuilt = c(as.vector(Rebuilt$COMNAME)),
+  Declining = c(as.vector(Declining$COMNAME)),
+  Depleted = c(as.vector(Depleted$COMNAME))
+)
+
+
+s <- ncol(out[["inputs"]][["y"]])
+specColor <- rep('black', s)
+snames <- colnames(out[["inputs"]][["y"]])
+names(specColor) = snames
+
+cc <- c("#ababab", "#006ba4", "#8ab8e3", "#ffbc79","#ff800e")
+
+for(j in 1:length(specGroups)){
+  wj <- which(snames %in% specGroups[[j]])
+  specColor[wj] <- cc[j]
+  names(specColor)[wj] <- names(specGroups)[j]
+}
+
+specs1 <- cbind(specColor, snames)
+
+
+
+
+spp_status <- spp_class %>% dplyr::select(COMNAME, depth_profile_pelagic_demersal)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+pelagic <- subset(spp_order_sel, spp_order_sel$depth_profile_pelagic_demersal == "pelagic")
+
+demersal <- subset(spp_order_sel, spp_order_sel$depth_profile_pelagic_demersal == "demersal")
+benthic <- subset(spp_order_sel, spp_order_sel$depth_profile_pelagic_demersal == "benthic")
+
+specGroups <- list(
+  pelagic = c(as.vector(pelagic$COMNAME)), 
+  demersal = c(as.vector(demersal$COMNAME)),
+  benthic = c(as.vector(benthic$COMNAME))
+)
+
+s <- ncol(out[["inputs"]][["y"]])
+specColor <- rep('black', s)
+snames <- colnames(out[["inputs"]][["y"]])
+names(specColor) = snames
+
+cc <- c("#006ba4","#ff800e","#595959")
+
+for(j in 1:length(specGroups)){
+  wj <- which(snames %in% specGroups[[j]])
+  specColor[wj] <- cc[j]
+  names(specColor)[wj] <- names(specGroups)[j]
+}
+
+specs2 <- cbind(specColor, snames)
+
+
+spp_status <- spp_class %>% dplyr::select(COMNAME, consump)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+Other <- subset(spp_order_sel, spp_order_sel$consump == "Other")
+Planktivore <- subset(spp_order_sel, spp_order_sel$consump == "Planktivore")
+Benthivore <- subset(spp_order_sel, spp_order_sel$consump == "Benthivore")
+Piscivore <- subset(spp_order_sel, spp_order_sel$consump == "Piscivore")
+
+
+specGroups <- list(
+  Other = c(as.vector(Other$COMNAME)), 
+  Planktivore = c(as.vector(Planktivore$COMNAME)),
+  Benthivore = c(as.vector(Benthivore$COMNAME)), 
+  Piscivore = c(as.vector(Piscivore$COMNAME))
+)
+
+s <- ncol(out[["inputs"]][["y"]])
+specColor <- rep('black', s)
+snames <- colnames(out[["inputs"]][["y"]])
+names(specColor) = snames
+
+cc <- c("#D3D3D3", "#006ba4","#ff800e","#595959")
+
+for(j in 1:length(specGroups)){
+  wj <- which(snames %in% specGroups[[j]])
+  specColor[wj] <- cc[j]
+  names(specColor)[wj] <- names(specGroups)[j]
+}
+
+specs3 <- cbind(specColor, snames)
+
+
+specs <- cbind(specs1, specs2, specs3)
+
+specs <- specs[,c(1, 2, 3, 5)]
+colnames(specs) <- c("stock", "snames", "pelagic", "feeding")
+specs <- as.data.frame(specs)
+rownames(specs) <- c()
+specs$snames <- as.factor(specs$snames)
+specs$stock <- as.character(specs$stock)
+specs$pelagic <- as.character(specs$pelagic)
+specs$feeding <- as.character(specs$feeding)
+```
+
+
+#rho and beta graphs
+I;m going to try and simulate figures 4 etc with rho and beta for my dataset 
+https://cdnsciencepub.com/doi/pdf/10.1139/cjfas-2019-0348
+I think this would be a good figure 
+I need to make sure that this value of rho and beta are standardized so I can compare them across species. 
+
+```{r}
+library(stringr)
+
+cbPalette <- c("#999999", "#000000", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+cbPalette2 <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#000000", "#0072B2", "#D55E00", "#CC79A7", "#E69F00", "#56B4E9", "#009E73")
+
+cbPalette3 <- c("darkgreen", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#000000","#000000","#000000", "#0072B2", "#D55E00", "#CC79A7", "#E69F00", "purple", "brown")
+cbPalette4 <- c("darkgreen",  "#000000", "#000000", "#000000", "#009E73","#0072B2",  "#E69F00", "purple")
+
+library(grid)
+library(ggthemes)
+
+theme_Publication <- function(base_size=12, base_family="Helvetica") {
+
+      (theme_foundation(base_size=base_size, base_family=base_family)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2), hjust = 0.5),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(face = "bold",size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black"),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = unit(0, "cm"),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text(face="bold")
+          ))
+      
+}
+scale_fill_Publication <- function(...){
+      library(scales)
+      discrete_scale("fill","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+scale_colour_Publication <- function(...){
+      library(scales)
+      discrete_scale("colour","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+rhotable <- out[["parameters"]][["rhoStandXTable"]]
+
+#separate 
+rhotable <- cbind(rhotable, str_split_fixed(rhotable$`rho_{to, from}`, ",", 2))
+
+#need to add just fishing 
+
+
+colnames(rhotable) <- c("rhotofrom","Estimate","SE","CI_025","CI_975","priorLo" , "priorHi", "spp", "variable")
+rhotable$sig <- ifelse(rhotable$CI_975 > 0 & rhotable$CI_025 > 0, "yes", ifelse(rhotable$CI_975 < 0 & rhotable$CI_025 < 0,  "yes", "no"))
+rhotable$Estimate <- ifelse(rhotable$Estimate > 10, 4, rhotable$Estimate)
+rhotable$CI_975 <- ifelse(rhotable$CI_975 > 10, 4, rhotable$CI_975) #to make graphs prettier
+
+#combine fishing into one
+rhotable1 <- rhotable
+rhotable1$variable <- as.character(rhotable1$variable)
+rhotable1$variable2 <- ifelse(rhotable1$variable == " Fbenthicsel1" | rhotable1$variable == " Fdemersalsel1" | rhotable1$variable == " Fpelagicsel1", "fishing", rhotable1$variable)
+
+rhotable1$variable2 <- gsub(pattern = " ", replacement = "", rhotable1$variable2)
+
+rhotable1$variable2 <- factor(rhotable1$variable2, levels = c("intercept", "depth", "SEDSIZE", "SST", "SSAL", "chla", "fishing", "season1", "season2"))
+
+rhotable1 <- rhotable1 %>% mutate(variable3 = dplyr::recode(variable2, intercept = "Intercept", season2 = "Season", fishing = "Fishing", depth = "Depth",  SEDSIZE = "Sediment \n size", SST = "Sea surface\n temperature", SSAL = "Sea surface \n salinity", chla = "Chlorophyll"))
+
+rhotable1 <- left_join(rhotable1, specs, by = c("spp" = "snames"))
+
+
+
+
+rhotable1$spp <- gsub(pattern = "\\.", replacement = " ", rhotable1$spp)
+rhotable1$spp <- tolower(rhotable1$spp)
+
+
+rhotable1$spp <- factor(as.character(rhotable1$spp))
+rhotable1$spp <- fct_rev(rhotable1$spp)
+
+specColor <- rhotable1 %>% group_by(spp) %>% summarise(stock = max(stock), pelagic = max(pelagic), feeding = max(feeding))
+specColor <- as.vector(specColor$pelagic)
+
+rhotable1 %>% filter(variable3 != "season2") %>% 
+ggplot(aes(y = Estimate, x = spp, color = sig, shape=sig)) +
+  geom_point() + 
+  geom_errorbar(aes(ymax = CI_025, ymin = CI_975)) + geom_hline(yintercept = 0, linetype = "dashed", size = .5) + facet_grid(~variable3 , scales = "free")+
+coord_flip()+ scale_color_manual(values=c("#999999", "darkblue")) + scale_shape_manual(values=c(1, 16)) + theme_Publication() +theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(), 
+        axis.title.y = element_blank(), 
+        legend.position = "none") + ggsave(filename= "Figure2.jpg", plot=last_plot(), width = 35, height=20, units=c("cm"), dpi=500)
+
+#theme(axis.text.y = element_text(colour=specColor))
+
+#BETA
+betatable <- out[["parameters"]][["betaStandXWTable"]]
+
+betatable$info <- rownames(betatable)
+#separate 
+betatable <- cbind(betatable, str_split_fixed(betatable$info, "_", 2))
+
+colnames(betatable) <- c("Estimate","SE","CI_025","CI_975","sig95", "info", "spp", "variable")
+betatable$sig <- ifelse(betatable$CI_975 > 0 & betatable$CI_025 > 0, "yes", ifelse(betatable$CI_975 < 0 & betatable$CI_025 < 0,  "yes", "no"))
+
+betatable1 <- betatable
+betatable1$variable <- as.character(betatable1$variable)
+betatable1$variable2 <- ifelse(betatable1$variable == "Fbenthicsel1" | betatable1$variable == "Fdemersalsel1" | betatable1$variable == "Fpelagicsel1", "fishing", betatable1$variable)
+
+
+#do our own graph 
+# function for computing mean, DS, max and min values
+betatable1$variable2 <- factor(betatable1$variable2, levels = c("depth", "SEDSIZE", "SST", "SSAL", "chla", "fishing", "season1", "season2", "depth:chla", "depth:SST", "SST:season2", "depth:season2"))
+
+betatable1 <- betatable1 %>% mutate(variable3 = dplyr::recode(variable2, season1 = "Season", fishing = "Fishing", depth = "Depth",  SEDSIZE = "Sediment \n size", SST = "Sea surface\n temperature", SSAL = "Sea surface \n salinity", chla = "Chlorophyll", `depth:chla` = "Depth:Chl", `depth:SST` =  "Depth:SST", `SST:season2`  = "SST:Season", `depth:season2` = "Depth:Season"))
+
+
+
+
+betatable1 <- left_join(betatable1, specs, by = c("spp" = "snames"))
+
+
+betatable1$spp <- gsub(pattern = "\\.", replacement = " ", betatable1$spp)
+betatable1$spp <- tolower(betatable1$spp)
+
+
+betatable1$spp <- factor(as.character(betatable1$spp))
+betatable1$spp <- fct_rev(betatable1$spp)
+
+
+specColor <- betatable1 %>% group_by(spp) %>% summarise(stock = max(stock), pelagic = max(pelagic), feeding = max(feeding))
+specColor <- as.vector(specColor$pelagic)
+
+betatable1 %>% filter(variable3 != "season2") %>% 
+ggplot(aes(y = Estimate, x = spp, color = sig, shape=sig)) +
+  geom_point() + 
+  geom_errorbar(aes(ymax = CI_025, ymin = CI_975)) + geom_hline(yintercept = 0, linetype = "dashed", size = .5) + facet_grid(~variable3 , scales = "free")+
+coord_flip()+ scale_color_manual(values=c("#999999", "darkblue")) + scale_shape_manual(values=c(1, 16)) + theme_Publication() +theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(), 
+        axis.title.y = element_blank(), 
+        legend.position = "none") + ggsave(filename= "Figure1.jpg", plot=last_plot(), width = 35, height=20, units=c("cm"), dpi=500)
+
+
+
+
+
+```
+
+#combine this with type info! 
+```{r}
+spring_dist_5yr <- read.csv("spring_dist_5yr.csv")
+fall_dist_5yr <- read.csv("fall_dist_5yr.csv")
+convex_hull_spring <- read.csv("convex_hull_spring.csv") 
+convex_hull_fall <- read.csv("convex_hull_fall.csv")
+
+#fix strange punctuation at the end of some species 
+spring_dist_5yr$spp <- gsub("[[:punct:]]$", "", spring_dist_5yr$spp) #for some reason it was putting punctuation at the end. get rid of that 
+fall_dist_5yr$spp <- gsub("[[:punct:]]$", "", fall_dist_5yr$spp) #for some reason it was putting punctuation at the end. get rid of that 
+
+
+
+#add to smu2 
+spp_selected <- read.csv("spp_by_year_selected.csv")
+spp_selected$COMNAME <- gsub("-", "",spp_selected$COMNAME )
+spp_selected$consump <- ifelse(spp_selected$COMNAME == "FAWN CUSKEEL", "Piscivore", as.character(spp_selected$consump))
+
+spp_selected$consump <- ifelse(spp_selected$COMNAME == "BOBTAIL UNCL", "Piscivore", as.character(spp_selected$consump))
+
+spp_selected$depth_profile_pelagic_demersal <- ifelse(spp_selected$COMNAME == "SHRIMP UNCL", "benthic", as.character(spp_selected$depth_profile_pelagic_demersal))
+
+spp_selected$depth_profile_pelagic_demersal <- ifelse(spp_selected$COMNAME == "FAWN CUSKEEL", "benthic", as.character(spp_selected$depth_profile_pelagic_demersal))
+
+spp_selected_2 <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_selected_2$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$COMNAME)
+spp_selected_2$SCINAME <- gsub(pattern = ' ', replacement = ".", x = spp_selected_2$SCINAME)
+
+
+smu_space <- left_join(smu2, spp_selected_2, by = c("snames" = "COMNAME"))
+
+spring_dist_5yr <- spring_dist_5yr %>% dplyr::select(-X) %>%
+  stats::setNames(c("spring_dist", "SCINAME"))
+
+fall_dist_5yr <- fall_dist_5yr %>% dplyr::select(-X) %>%
+  stats::setNames(c("fall_dist", "SCINAME"))
+
+convex_hull_fall <- convex_hull_fall %>% dplyr::select(area_diff_5yr, area_percchange_5yr, south_lat_change,     north_lat_change, names) %>%
+  stats::setNames(c("fall_area_diff_5yr", "fall_area_percchange_5yr", "fall_south_lat_change",     "fall_north_lat_change", "SCINAME"))
+
+convex_hull_spring <- convex_hull_spring %>% dplyr::select(area_diff_5yr, area_percchange_5yr, south_lat_change,     north_lat_change, names) %>%
+  stats::setNames(c("spring_area_diff_5yr", "spring_area_percchange_5yr", "spring_south_lat_change",     "spring_north_lat_change", "SCINAME"))
+
+#join together
+smu_space <- left_join(smu_space, spp_selected_2, by = "SCINAME")
+smu_space <- left_join(smu_space, spring_dist_5yr, by = "SCINAME")
+smu_space <- left_join(smu_space, fall_dist_5yr, by = "SCINAME")
+smu_space <- left_join(smu_space, convex_hull_spring, by = "SCINAME")
+smu_space <- left_join(smu_space, convex_hull_fall, by = "SCINAME")
+
+#this is probably taboo, but I want one number for the whole year, so I should probably do this before, but to test, lets see whats happening 
+
+smu_space$dist_5yr <-  smu_space$spring_dist + smu_space$fall_dist
+smu_space$area_diff <-  smu_space$spring_area_diff_5yr + smu_space$fall_area_diff_5yr
+smu_space$area_perc <-  smu_space$spring_area_percchange_5yr + smu_space$fall_area_percchange_5yr
+smu_space$south_lat <-  smu_space$spring_south_lat_change + smu_space$fall_south_lat_change
+smu_space$north_lat <-  smu_space$spring_north_lat_change + smu_space$fall_north_lat_change
+
+
+
+
+```
+
+##get out most important rho alpha or beta 
+```{r}
+smu_space_smol <- smu_space %>% dplyr::select("rho", "alpha", "beta") 
+smu_space_smol <- abs(smu_space_smol)
+smu_space_smol$strong <- colnames(smu_space_smol)[max.col(smu_space_smol,ties.method="first")] 
+
+smu_space$strong <- smu_space_smol$strong
+
+
+
+
+```
+
+##melt 
+```{r}
+#melt data 
+melted <- melt(smu_space,id.vars='SCINAME', measure.vars=c("spring_dist", "fall_dist","spring_area_diff_5yr", "spring_area_percchange_5yr", "spring_south_lat_change", "spring_north_lat_change", "fall_area_diff_5yr", "fall_area_percchange_5yr", "fall_south_lat_change","fall_north_lat_change"))
+
+melted <- left_join(smu_space, melted, by=c("SCINAME"))
+melted <- as.data.frame(melted)
+
+
+#melt data  again for total (ignore if just want seasonal stuff )
+melted <- melt(smu_space,id.vars='SCINAME', measure.vars=c("dist_5yr", "area_diff", "area_perc", "south_lat", "north_lat"  ))
+
+melted <- left_join(smu_space, melted, by=c("SCINAME"))
+melted <- as.data.frame(melted)
+
+#melt again to get out rho, beta and alpha values in there 
+
+melted2 <- melt(smu_space,id.vars='SCINAME', measure.vars=c("rho", "alpha"))
+colnames(melted2) <- c("SCINAME", "perc_variable","perc_value")  
+melted2 <- left_join(melted, melted2, by=c("SCINAME"))
+melted2 <- as.data.frame(melted2)
+
+
+spp_selected$SCINAME <- gsub(pattern = " ", replacement = ".", x = spp_selected$SCINAME)
+melted2 <- left_join(melted2, spp_selected, by = c("SCINAME"))
+
+#replace rho and alpha with DI and DD 
+melted2$perc_variable2 <- ifelse(melted2$perc_variable == "rho", "DI", "DD")
+#capitalizes benthic etc and declining etc. 
+melted2$depth_profile_pelagic_demersal <-  str_to_title(melted2$depth_profile_pelagic_demersal)
+melted2$stock_status <-  str_to_title(melted2$stock_status)
+
+
+
+
+```
+
+##plot
+```{r}
+my_comparisons <- list(c("DD", "DI"))
+moveplot <- ggplot(data=melted, aes(x=strong, y=value, fill=strong)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "Strongest predictor variable") +
+  facet_wrap(~variable, scales = "free")  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+#this doesn't really show anything 
+
+#based on either pelagic or demersal or benthic 
+
+  
+my_comparisons <- list( c("Pelagic", "Demersal"), c("Pelagic", "Benthic"), c("Demersal", "Benthic"))
+
+
+
+pplot <- melted2 %>% ggplot(aes(x=depth_profile_pelagic_demersal, y=perc_value, fill=depth_profile_pelagic_demersal)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "species type") +
+  facet_wrap(~perc_variable2, scales = "free")  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+my_comparisons <- list(c("DD", "DI"))
+pplot2 <- melted2 %>% ggplot(aes(x=perc_variable2, y=perc_value, fill=perc_variable2)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "species type") +
+  facet_wrap(~depth_profile_pelagic_demersal, scales = "free")  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+##okay this is interresing!! 
+
+
+my_comparisons <- list( c("Pelagic", "Demersal"), c("Pelagic", "Benthic"), c("Demersal", "Benthic"))
+orderplot <- ggplot(data=melted2, aes(x=order, y=perc_value, fill=order)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  #stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "species type") +
+  facet_wrap(~perc_variable2, scales = "free")  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+#flip it 
+my_comparisons <- list(c("DD", "DI"))
+orderplot2 <- ggplot(data=melted2, aes(x=perc_variable2, y=perc_value, fill=perc_variable2)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "species type") +
+  facet_wrap(~order, scales = "free")  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+
+#consumers etc. 
+#flip it 
+
+my_comparisons <- list( c("Benthivore", "Piscivore"), c("Piscivore", "Planktivore"), c("Planktivore", "Benthivore"))
+consumpplot2 <- ggplot(data=melted2, aes(x=consump, y=perc_value, fill=consump)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "species type") +
+  facet_wrap(~perc_variable2, scales = "free")  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+#flip it 
+my_comparisons <- list(c("DD", "DI"))
+
+consumpplot <- ggplot(data=melted2, aes(x=perc_variable2, y=perc_value, fill=perc_variable2)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "species type") +
+  facet_wrap(~consump, scales = "free")  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+
+
+#stock status 
+my_comparisons <- list( c("declining", "depleted"), c("declining", "rebuilt"), c("declining", "stable"), c("declining", "unknown"), c("rebuilt", "stable "),c("rebuilt", "unknown"),c("stable", "unknown"), c("depleted", "stable"), c("depleted", "unknown"), c("depleted", "rebuilt"))
+
+test <- as.vector(melted2$stock_status)
+melted2$stock_status <- gsub("\\s$", "", melted2$stock_status)
+
+
+
+stockplot <- ggplot(data=melted2, aes(x=stock_status, y=perc_value, fill=stock_status)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "species type") +
+  facet_wrap(~perc_variable2, scales = "free")  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+#flip it 
+my_comparisons <- list(c("DD", "DI"))
+
+stockplot2 <- melted2 %>%  filter (stock_status != "Unknown") %>% ggplot(aes(x=perc_variable2, y=perc_value, fill=perc_variable2)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "species type") +
+  facet_wrap(~stock_status, scales = "free", nrow = 1)  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+
+smu_space2 <- left_join(smu_space, spp_selected, by = "SCINAME")
+check <- smu_space2 %>% dplyr::select(COMNAME.y, stock_status)
+
+test <- smu_space2 %>% 
+    group_by(stock_status) %>% 
+    summarize(count = n())
+
+
+#same as above but remove unknown per jim's suggestion 
+#also group depleted and declining 
+
+melted2$stock_status2 <- ifelse(melted2$stock_status == "declining", "depleted", melted2$stock_status)
+
+my_comparisons <- list( c("Stable", "Depleted"), c("Stable", "Rebuilt"), c("Rebuilt", "Depleted"), c("Declining", "Depleted"), c("Declining", "Rebuilt"), c("Declining", "Stable"))
+                        
+stockplot3 <- melted2 %>% dplyr::filter(stock_status!="Unknown") %>%
+ggplot(aes(x=stock_status, y=perc_value, fill=stock_status)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "species type") +
+  facet_wrap(~perc_variable2, scales = "free")  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+#flip it 
+my_comparisons <- list(c("DD", "DI"))
+
+stockplot4 <- melted2 %>% dplyr::filter(stock_status!="unknown") %>% 
+ggplot(aes(x=perc_variable2, y=perc_value, fill=perc_variable2)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+    labs(y = "", x = "species type") +
+  facet_wrap(~stock_status2, scales = "free")  +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+
+```
+##look 
+```{r}
+stockplot
+stockplot2
+stockplot3
+stockplot4
+consumpplot
+consumpplot2
+pplot
+pplot2
+```
+
+
+##arrange 
+```{r}
+library(ggsci)
+library(gridExtra)
+```
+
+```{r}
+p <- grid.arrange((pplot+ scale_fill_simpsons() + theme(axis.title.x = element_blank())),(consumpplot2+ scale_fill_simpsons()+ theme(axis.title.x = element_blank())),(stockplot3+ scale_fill_simpsons()+ theme(axis.title.x = element_blank())), nrow = 3,
+  heights = c(4,4,4))
+  
+ggsave(filename= "Figure3.jpg", plot=p, width = 20, height=20, units=c("cm"), dpi=500)
+
+p2 <- grid.arrange(arrangeGrob(stockplot2 + scale_fill_simpsons() + theme(axis.title.x = element_blank())),arrangeGrob((consumpplot+ scale_fill_simpsons()+ theme(axis.title.x = element_blank())), (pplot2+ scale_fill_simpsons()+ theme(axis.title.x = element_blank())), ncol=1), 
+             ncol=2, widths=c(1,1))
+  
+ggsave(filename= "Figure4.jpg", plot=p2, width = 30, height=20, units=c("cm"), dpi=500)
+
+
+library(cowplot)
+#try with draw plot 
+p2 <- ggdraw() +
+  draw_plot(stockplot2 + scale_fill_simpsons() + theme(axis.title.x = element_blank()), 0, .5, 1, .5) +
+  draw_plot(consumpplot + scale_fill_simpsons() + theme(axis.title.x = element_blank()), 0, 0, .5, .5) +
+  draw_plot(pplot2 + scale_fill_simpsons() + theme(axis.title.x = element_blank()), 0, 0, .5, .5) +
+  draw_plot_label(c("A", "B", "C"), c(0, 0, 0.5), c(1, 0.5, 0.5), size = 15)
+
+ggsave(filename= "Figure4.jpg", plot=p2, width = 30, height=20, units=c("cm"), dpi=500)
+
+
+pstock <- stockplot2 + theme_Publication()+ scale_fill_simpsons() + theme(axis.title.x = element_blank())
+ggsave(filename= "Figure6.jpg", plot=pstock, width = 20, height=10, units=c("cm"), dpi=500)
+
+```
+
+##stats 
+```{r}
+melted2 %>% group_by(stock_status) %>% do(w=wilcox.test(perc_value ~ perc_variable, data = ., paired=TRUE)) %>% summarise(stock_status, Wilcox = w$p.value)
+
+
+melted2 %>% group_by(stock_status, perc_variable) %>% summarise(mean = mean(perc_value))
+spp_sel <- spp_selected[spp_selected$SCINAME %in% melted2$SCINAME,]
+
+spp_sel %>% group_by(stock_status) %>% summarise(count = n())
+spp_sel %>% group_by(depth_profile_pelagic_demersal) %>% summarise(count = n())
+spp_sel %>% group_by(consump) %>% summarise(count = n())
+
+```
+
+
+
+Are benthivores more benthic? Are demersal species more overfished? 
+
+```{r}
+spp_selected$COMNAME <- gsub(pattern = " ", replacement = ".", x = spp_selected$COMNAME)
+
+
+a <- spp_sel %>%  filter (stock_status != "unknown") %>% ggplot(aes(x = consump, fill = consump)) + geom_histogram(stat = "count") + facet_wrap(~stock_status)+ theme_Publication() +theme(axis.title.x=element_blank(),
+        axis.ticks.x=element_blank(), 
+        axis.title.y = element_blank(), 
+        legend.position = "none")+ scale_fill_Publication()
+
+b <- spp_sel %>% ggplot(aes(x = depth_profile_pelagic_demersal, fill = depth_profile_pelagic_demersal)) + geom_histogram(stat = "count") + facet_wrap(~consump)+ theme_Publication() +theme(axis.title.x=element_blank(),
+        axis.ticks.x=element_blank(), 
+        axis.title.y = element_blank(), 
+        legend.position = "none")+ scale_fill_Publication()
+
+c <- grid.arrange(a, b)
+
+RMSE <- out[["fit"]][["rmspeBySpec"]]
+
+
+p3 <- grid.arrange((pplot+ scale_fill_simpsons() + theme(axis.title.x = element_blank())),(consumpplot2+ scale_fill_simpsons()+ theme(axis.title.x = element_blank())),(stockplot3+ scale_fill_simpsons()+ theme(axis.title.x = element_blank())), nrow = 3,
+  heights = c(4,4,4))
+ggsave(filename= "Figure7a.jpg", plot=p3, width = 20, height=20, units=c("cm"), dpi=500)
+
+
+p4 <- grid.arrange((b+ scale_fill_simpsons() + theme(axis.text.x = element_text(angle = 90)) + theme(axis.title.x = element_blank())),(a+ scale_fill_simpsons()+ theme(axis.text.x = element_text(angle = 90))+ theme(axis.title.x = element_blank())), nrow = 2,
+  heights = c(4,4))
+ggsave(filename= "Figure7b.jpg", plot=p4, width = 20, height=20, units=c("cm"), dpi=500)
+
+
+p3 <- ggarrange((pplot+ scale_fill_simpsons() + theme(axis.title.x = element_blank())),(consumpplot2+ scale_fill_simpsons()+ theme(axis.title.x = element_blank())),(stockplot3+ scale_fill_simpsons()+ theme(axis.title.x = element_blank())), nrow = 3, ncol = 2,
+  heights = c(4,4,4), ggarrange(a,c, ncol =2))
+
+spp_sel %>% filter(COMNAME!="SHRIMP.UNCL") %>% ggplot(aes(consump)) + geom_histogram(stat = "count") + facet_wrap(~type)
+
+
+```
+
+
+plot regressions 
+```{r}
+
+formula <- y ~ x  
+library(ggpmisc)
+p1 <- ggplot(data=melted2, aes(x=value, y=perc_value, color = perc_variable)) + geom_point(alpha = 0.3)+ stat_smooth(method="lm", formula = formula, se = F) +
+  facet_wrap(~variable, scales = "free") 
+
+p1 + stat_poly_eq(aes(label = paste(..rr.label..)), 
+       label.x = "right", label.y = "bottom",
+       formula = formula, parse = TRUE, size = 3)+
+       stat_fit_glance(method = 'lm',
+                       method.args = list(formula = formula),
+                       geom = 'text',
+                       aes(label = paste("P-value = ", signif(..p.value.., digits = 4), sep = "")),
+       label.x = "center", label.y = "top", vstep = .1, size = 3)
+```
+
+#generalists 
+figure out a metric of predatory/preyness 
+look at home many arrows are going to or from in prior alpha and post alpha? 
+
+```{r}
+alphaSign <- read.csv("alphaSign_filled.csv")
+rownames(alphaSign) <- alphaSign$X
+alphaSign <- alphaSign %>% dplyr::select(-X)
+
+alphaSign[alphaSign==-1]<-1
+alphaSign <- as.matrix(alphaSign)
+
+
+alphaSign_sums <- as.data.frame(rowSums(alphaSign))
+alphaSign_sums$specs <- rownames(alphaSign_sums)
+
+
+alphaSign_sums$SCINAME <- gsub(pattern = " ", replacement = ".", x = alphaSign_sums$specs)
+alphaSign_sums$prior_alpha <- alphaSign_sums$`rowSums(alphaSign)`
+
+melted3 <- left_join(melted2, alphaSign_sums, by = "SCINAME")
+
+
+formula <- y ~ x  
+library(ggpmisc)
+p1 <- ggplot(data=melted3, aes(x=prior_alpha, y=perc_value, color = perc_variable)) + geom_point(alpha = 0.3)+ stat_smooth(method="lm", formula = formula, se = F)
+
+p1 + stat_poly_eq(aes(label = paste(..rr.label..)), 
+       label.x = "right", label.y = "bottom",
+       formula = formula, parse = TRUE, size = 3)+
+       stat_fit_glance(method = 'lm',
+                       method.args = list(formula = formula),
+                       geom = 'text',
+                       aes(label = paste("P-value = ", signif(..p.value.., digits = 4), sep = "")),
+       label.x = "center", label.y = "top", vstep = .1, size = 3) + ylab("Percentage Deviance explaine") + xlab("Number of species interactions (prior)")
+
+
+
+alphaSign <- post_alpha_test <- out[["parameters"]][["alphaMu"]]
+alphaSign <- as.data.frame(alphaSign)
+
+alphaSign[alphaSign>0]<-1
+alphaSign[alphaSign<0]<-1
+
+
+
+alphaSign_sums2 <- as.data.frame(rowSums(alphaSign))
+alphaSign_sums2$specs <- rownames(alphaSign_sums2)
+
+
+alphaSign_sums2$COMNAME <- gsub(pattern = " ", replacement = ".", x = alphaSign_sums2$specs)
+alphaSign_sums2$post_alpha <- alphaSign_sums2$`rowSums(alphaSign)`
+
+
+melted3 <- left_join(melted3, alphaSign_sums2, by = c("COMNAME.x" = "COMNAME"))
+
+
+
+formula <- y ~ x  
+library(ggpmisc)
+p1 <- ggplot(data=melted3, aes(x=post_alpha, y=perc_value, color = perc_variable)) + geom_point(alpha = 0.3)+ stat_smooth(method="lm", formula = formula, se = F)
+
+p1 + stat_poly_eq(aes(label = paste(..rr.label..)), 
+       label.x = "right", label.y = "bottom",
+       formula = formula, parse = TRUE, size = 3)+
+       stat_fit_glance(method = 'lm',
+                       method.args = list(formula = formula),
+                       geom = 'text',
+                       aes(label = paste("P-value = ", signif(..p.value.., digits = 4), sep = "")),
+       label.x = "center", label.y = "top", vstep = .1, size = 3) + ylab("Percentage Deviance explaine") + xlab("Number of species interactions (posterior)")
+
+
+#wheighted interactions 
+
+alphaSign <- post_alpha_test <- out[["parameters"]][["alphaMu"]]
+alphaSign <- as.data.frame(alphaSign)
+
+alphaSign<-abs(alphaSign)
+
+
+
+alphaSign_sums2 <- as.data.frame(rowSums(abs(alphaSign)))
+alphaSign_sums2$specs <- rownames(alphaSign_sums2)
+
+
+alphaSign_sums2$COMNAME <- gsub(pattern = " ", replacement = ".", x = alphaSign_sums2$specs)
+alphaSign_sums2$post_alpha_weight <- alphaSign_sums2$`rowSums(abs(alphaSign))`
+
+
+melted3 <- left_join(melted3, alphaSign_sums2, by = c("COMNAME.x" = "COMNAME"))
+
+
+
+formula <- y ~ x  
+library(ggpmisc)
+p1 <- ggplot(data=melted3, aes(x=post_alpha_weight, y=perc_value, color = perc_variable)) + geom_point(alpha = 0.3)+ stat_smooth(method="lm", formula = formula, se = F)
+
+p1 + stat_poly_eq(aes(label = paste(..rr.label..)), 
+       label.x = "right", label.y = "bottom",
+       formula = formula, parse = TRUE, size = 3)+
+       stat_fit_glance(method = 'lm',
+                       method.args = list(formula = formula),
+                       geom = 'text',
+                       aes(label = paste("P-value = ", signif(..p.value.., digits = 4), sep = "")),
+       label.x = "center", label.y = "top", vstep = .1, size = 3) + ylab("Percentage Deviance explaine") + xlab("Species  interactions (posterior weighted)")
+
+
+```
+
+Are generalist declining or doing okay in temrs of fishing??
+```{r}
+my_comparisons <- list( c("declining ", "depleted"), c("declining ", "rebuilt"), c("declining ", "stable "), c("declining ", "unknown"), c("rebuilt", "stable "),c("rebuilt", "unknown"),c("stable ", "unknown"), c("depleted", "stable "), c("depleted", "unknown"), c("depleted", "rebuilt"))
+
+ggplot(data=melted3, aes(x=stock_status, y=post_alpha, fill=stock_status)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+    labs(y = "# of species interactions (posterior)", x = "stock status") +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+
+
+
+ggplot(data=melted3, aes(x=stock_status, y=post_alpha_weight, fill=stock_status)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+    labs(y = "post alpha weighted", x = "stock status") +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+
+ggplot(data=melted3 %>% filter(melted3$perc_variable == "alpha"), aes(x=stock_status, y=perc_value, fill=stock_status)) + geom_boxplot(outlier.size=.5, fatten = 1) +
+  stat_summary(fun.y=mean, colour="darkred", geom="point", 
+               shape=18, size=2,show_guide = FALSE) +
+    labs(y = "deviance explained by alpha", x = "stock status") +
+  stat_compare_means(comparisons = my_comparisons, method="wilcox.test", label = "p.format", size=2.5) +
+ theme_classic(base_size=10) +
+  theme(axis.title = element_text(size = rel(1.5)),
+        axis.text = element_text(size = rel(1)), 
+        strip.text = element_text(size = rel(1)), 
+        panel.spacing = unit(1, "cm")) +
+  theme(legend.position = "none") 
+
+
+#make this a four panel figure 
+
+```
+
+#supplemental 
+
+##table 1 
+```{r}
+predy <- read.csv("/Users/sarahroberts/Documents/ClimateOceanPlanning/R/gjam_time/PredPrey.csv")
+
+spp_names <- spp_selected %>% dplyr::select(SCINAME, COMNAME)
+spp_names$SCINAME <- gsub(pattern = '\\.', replacement = " ", x = spp_names$SCINAME)
+predy <- left_join(predy, spp_names, by = c("pred_SCINAME" = "SCINAME"))
+predy_2 <- left_join(predy, spp_names, by = c("PYNAM" = "SCINAME"))
+
+predy_2$COMNAME.x <- gsub(pattern = '\\.', replacement = " ", x = predy_2$COMNAME.x)
+
+predy_2$COMNAME.y <- gsub(pattern = '\\.', replacement = " ", x = predy_2$COMNAME.y)
+
+predy_2 <- predy_2 %>% dplyr::select(-pred_SCINAME, -PYNAM)
+```
+
+
+##AUC
+```{r}
+pred_prob <- out[["prediction"]][["presence"]]
+
+observed <- out[["inputs"]][["y"]]
+
+pred_cutoff_50 <- ifelse(pred_prob >.49, 1, 0)
+pred_cutoff_50 <- as.data.frame(pred_cutoff_50)
+
+observed_2 <- ifelse(observed >0, 1, 0)
+library(pROC)
+library(caret)
+observed_2 <- as.data.frame(observed_2)
+
+specnames <- colnames(pred_cutoff_50)
+
+
+tot_metrics_bin_gjam <- data.frame(matrix(ncol=4, nrow=1))
+colnames(tot_metrics_bin_gjam) <- c("names", "AUC_gjam", "sens_gjam", "spec_gjam")
+
+for (i in 1:length(specnames)) {     
+  tryCatch({#for each species in spec_list
+  obs <- observed_2[specnames[i]]
+  pred <- pred_cutoff_50[specnames[i]]
+  data <- cbind(obs, pred)
+  colnames(data) <- c("observed", "predicted")
+  r <- roc(data, observed, predicted)
+  auc <- r$auc
+  auc <- auc[1]
+  obs[obs=="0"] <- "absent"
+  obs[obs=="1"] <- "present"
+  pred[pred=="0"] <- "absent"
+  pred[pred=="1"] <- "present"
+  data <- cbind(obs,pred)
+  colnames(data) <- c("observed", "predicted")
+  c <- confusionMatrix(table(data$predicted, data$observed))
+  sens <- c$byClass['Sensitivity']
+  spec <- c$byClass['Specificity']
+  
+  
+  dev_table <- list("null", auc, sens, spec)
+        dev_table <- as.data.frame(dev_table)
+        colnames(dev_table) <- c("names", "AUC_gjam", "sens_gjam", "spec_gjam")
+        dev_table$names <- specnames[i]
+        
+        tot_metrics_bin_gjam <- rbind(tot_metrics_bin_gjam, dev_table)
+    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+      
+} 
+
+write.csv(tot_metrics_bin_gjam, file="total_metrics_bin_gjam_May2.csv")
+
+
+```
+
+
+
+
+
+```{r}
+# Install
+if(!require(devtools)) install.packages("devtools")
+devtools::install_github("kassambara/ggcorrplot", force = TRUE)
+
+library(ggcorrplot)
+library(corrplot)
+#try reordering 
+library(lessR)
+betas <- out$parameters$betaStandXTable
+sens <- out[["parameters"]][["sensTable"]]
+rmsetot <- out[["fit"]][["rmspeAll"]]
+DIC <- out[["fit"]][["DIC"]]
+rmse_byspec <- out[["fit"]][["rmspeBySpec"]] 
+cor <- out[["parameters"]][["corMu"]] #modeled co-occurence 
+colnames(cor) <- colnames(out[["parameters"]][["corSe"]])
+s_mat <- out[["parameters"]][["sigMu"]]
+#add cor from ydata for panel A
+ycor <- out[["inputs"]][["y"]]
+
+
+
+
+
+ggcorrplot::ggcorrplot(s_mat, type = "lower")+ scale_fill_gradient2(low = "blue", mid = "white", high = "red", breaks=c(0), limit=c(-10, 10)) + theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1))+ scale_x_discrete(breaks = NULL)
+
+
+
+
+cor2 <- out[["parameters"]][["ematrix"]]
+
+
+cor <- as.matrix(cor)
+
+#co-occurence in ydata 
+ggcorrplot::ggcorrplot(ycor, type = "lower")+ scale_fill_gradient2(low = "blue", mid = "white", high = "red", breaks=c(0), limit=c(-1, 1))+ theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1), panel.grid.major.x = element_blank())
+
+
+
+#co-occurence modeled
+ggcorrplot::ggcorrplot(cor, type = "lower")+ scale_fill_gradient2(low = "blue", mid = "white", high = "red", breaks=c(0), limit=c(-1, 1))+ theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1), panel.grid.major.x = element_blank())
+
+#ematrix
+ggcorrplot::ggcorrplot(cor2, type = "lower") + scale_fill_gradient2(low = "blue", mid = "white", high = "red", breaks=c(0), limit=c(-1.5, 1.5))+ theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1), panel.grid.major.x = element_blank())
+
+ggcorrplot::ggcorrplot(cor2) + scale_fill_gradient2(low = "blue", mid = "white", high = "red", breaks=c(0), limit=c(-1.5, 1.5))+ theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1), panel.grid.major.x = element_blank())
+
+
+
+#difference 
+dif_cor <- cor - ycor
+ggcorrplot::ggcorrplot(dif_cor, type = "lower", legend.title = "modeled - observed \nco-occurrence")+ theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1), panel.grid.major.x = element_blank())
+
+```
+Lets try making a tile plot with the beta matrix 
+
+```{r}
+betas_tidy <- betas 
+betas_tidy$variable <- rownames(betas_tidy)
+betas_tidy <- betas_tidy %>% separate(variable, c("species","variable"), sep = "([_])")
+
+ggplot(data = betas_tidy, aes(x=variable, y=species, fill=Estimate)) + 
+  geom_tile() + scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, space = "Lab", 
+   name="Betas") + theme(axis.text.x = element_text(angle = 90, size = 15, vjust = 1, hjust = 1), axis.text.y = element_text(size = 15))
+
+```
+
+
+##betas 
+
+```{r}
+sens <- out[["parameters"]][["sensTable"]]
+
+sens$groups <- rownames(sens)
+
+ggplot(sens, aes(x = reorder(groups, -Estimate))) +
+  geom_boxplot(aes(
+      lower = Estimate - SE, 
+      upper = Estimate + SE, 
+      middle = Estimate, 
+      ymin = Estimate - 3*SE, 
+      ymax = Estimate + 3*SE),
+    stat = "identity")
+```
+
+
+
+##Obs vs predicted
+
+```{r}
+
+plot_list = list()
+obs <- out[["inputs"]][["y"]]
+pred <- out[["prediction"]][["ypredMu"]]
+steps<- colnames(obs)
+
+for(i in 1:length(steps)){
+  name <- steps[i]
+  yo = obs[,i]
+yp = pred[,i]
+dat <- cbind(yo, yp)
+dat <- as.data.frame(dat)
+colnames(dat)
+rmseval2 <- Metrics::rmse(actual = dat$yo, predicted = dat$yp) #to put on the graph
+meany2 <- mean(dat$yo) #to put on the graph
+rss <- sum((dat$yp - dat$yo) ^ 2)  ## residual sum of squares
+tss <- sum((dat$yp - mean(dat$yo)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+
+ploty <- ggplot()  + geom_point(data = dat, aes(x = yo,y = yp), size = .2, color = "black")+
+  geom_abline(linetype=2) +  
+  theme_Publication() + 
+  xlim(c(0,max(dat$yp)))+ 
+  ylim(c(0,max(dat$yp))) + 
+  theme(aspect.ratio = 1) +
+  labs(y = expression(paste("Predicted catch (CPUE)")), x = expression(paste("Reported catch (CPUE)")),title=name)
+#ggsave(ploty, file=paste0("plot_", i,".jpg"), width = 10, height=10, units=c("cm"), dpi=500)
+plot_list[[i]] <- ploty
+}
+
+do.call(ggarrange, c(plot_list[1:length(steps)], common.legend = TRUE, legend = "bottom")) + ggsave(filename= "FigureS1.jpg", plot=last_plot(), width = 50, height=50, units=c("cm"), dpi=500)
+
+
+
+
+
+
+
+```
+
+##clustered 
+```{r}
+xnames <- rownames(out[["parameters"]][["sensTable"]])
+plot_list = list()
+
+plot_list = list()
+obs <- out[["inputs"]][["y"]]
+obs <- as.data.frame(obs)
+pred <- out[["prediction"]][["ypredMu"]]
+steps<- colnames(obs)
+
+xnames <- c("depth", "SEDSIZE", "SST", "SSAL", "season2")
+
+#aggregate
+cvar <- out[["inputs"]][["xdata"]]
+cvar <- cvar[colnames(cvar) %in% xnames]
+
+
+minSize <- 10                   # experiment with sizes of clusters
+maxSize <- 20
+
+groups <- kmeansEqualGroups(cvar, minSize = minSize, maxSize = maxSize)
+xmean <- groups$clusterMeans
+xmean <- as.data.frame(xmean)
+xmean$cluster <- 1:nrow(xmean)
+clusters <- groups$cluster
+
+obs$cluster <- clusters
+newdata <- left_join(obs, xmean, by = "cluster")
+newy2 <- as.data.frame(newdata) %>% group_by(cluster) %>% summarise_at(steps, mean, na.rm =T)
+newy2 <- newy2[,-1]
+
+tabley <- as.data.frame(matrix(nrow = 1, ncol = 4))
+colnames(tabley) <- c("name", "meany2", "rmseval2", "rsq")
+for(i in 1:length(steps)){
+  name <- steps[i]
+  yo = newy2[,i]
+yp = pred[,i]
+yp <- as.data.frame(yp)
+yp$cluster <- clusters
+yp <- yp %>% group_by(cluster) %>% summarise(yp = mean(yp, na.rm =T))
+yp <- yp[,-1]
+dat <- cbind(yo, yp)
+colnames(dat) <- c("yo", "yp")
+rmseval2 <- Metrics::rmse(actual = dat$yo, predicted = dat$yp) #to put on the graph
+meany2 <- mean(dat$yo) #to put on the graph
+rss <- sum((dat$yp - dat$yo) ^ 2)  ## residual sum of squares
+tss <- sum((dat$yp - mean(dat$yo)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+
+listy <- c(name, meany2, rmseval2, rsq)
+tabley <- rbind(tabley, listy)
+
+
+
+ploty <- ggplot()  + geom_point(data = dat, aes(x = yo,y = yp), size = .2, color = "black")+
+  geom_abline(linetype=2) +  
+  theme_Publication() + 
+  xlim(c(0,max(dat$yp)))+ 
+  ylim(c(0,max(dat$yp))) + 
+  theme(aspect.ratio = 1) +
+  labs(y = expression(paste("Predicted catch (CPUE)")), x = expression(paste("Reported catch (CPUE)")),title=name)
+#ggsave(ploty, file=paste0("plot_", i,".jpg"), width = 10, height=10, units=c("cm"), dpi=500)
+plot_list[[i]] <- ploty
+}
+
+do.call(ggarrange, c(plot_list[1:length(steps)], common.legend = TRUE, legend = "bottom")) + ggsave(filename= "FigureS1clustered.jpg", plot=last_plot(), width = 50, height=50, units=c("cm"), dpi=500)
+
+```
+
+
+#OLD 
+##picking out a few species 
+atlantic cod 
+longhorn sculpin 
+sea raven 
+butterfish
+little skate 
+striped anchovy 
+
+```{r}
+rhotable %>% filter(spp == "ALEWIFE" | spp == "ATLANTIC.COD" | spp == "GOOSEFISH"| spp == "SEA.RAVEN" | spp == "SMOOTH.DOGFISH"| spp == "LONGHORN.SCULPIN" | spp == "STRIPED.ANCHOVY"| spp == "WINTER.SKATE" | spp == "ROUND.HERRING"| spp == "FOURSPOT.FLOUNDER" | spp == "STRIPED.ANCHOVY") %>%
+ggplot(aes(y = Estimate, x = variable, fill = variable, alpha=sig)) + geom_bar(stat="identity", position = position_dodge(width = 0.9)) +
+  geom_errorbar(aes(ymax = CI_025, ymin = CI_975), color = "gray",
+                position = "dodge") + theme_bw(base_size = 10) + scale_fill_manual(values=cbPalette4)+  scale_alpha_discrete(range = c(0.2, 1))  + facet_wrap(~spp, nrow = 3,scales = "free") + geom_hline(yintercept = 0, linetype = "dashed", size = .5) + ylab("")+ xlab("")+ theme(legend.position="bottom")
+
+betatable %>% filter(spp == "ALEWIFE" | spp == "ATLANTIC.COD" | spp == "GOOSEFISH"| spp == "SEA.RAVEN" | spp == "SMOOTH.DOGFISH"| spp == "LONGHORN.SCULPIN" | spp == "STRIPED.ANCHOVY"| spp == "WINTER.SKATE" | spp == "ROUND.HERRING"| spp == "FOURSPOT.FLOUNDER" | spp == "STRIPED.ANCHOVY") %>%
+ggplot(aes(y = Estimate, x = variable, fill = variable, alpha=sig)) + geom_bar(stat="identity", position = position_dodge(width = 0.9)) +
+  geom_errorbar(aes(ymax = CI_025, ymin = CI_975), color = "gray",
+                position = "dodge") + theme_bw(base_size = 10) + scale_fill_manual(values=cbPalette3)+  scale_alpha_discrete(range = c(0.2, 1))  + facet_wrap(~spp, nrow = 3,scales = "free") + geom_hline(yintercept = 0, linetype = "dashed", size = .5) + ylab("")+ xlab("")+ scale_colour_brewer(palette = "Set1")+ theme(legend.position="bottom")
+
+```
+
+
+#sensitivity of whole community? 
+I don;t think this is right 
+```{r}
+
+srho <- out[["parameters"]][["rhoStandXmu"]]
+srho <- t(srho) 
+
+srho <- as.data.frame(srho)%>% mutate (specs = rownames(srho)) 
+
+srho$fishing <- srho$Fbenthicsel1 + srho$Fdemersalsel1 + srho$Fpelagicsel1
+
+#match to only show benthic fishing for benthic species 
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_status <- spp_class %>% dplyr::select(COMNAME, depth_profile_pelagic_demersal)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+srho <- left_join(srho, spp_order_sel, by = c("specs"="COMNAME"))
+
+srho_long <- as.data.frame(srho) %>% dplyr::select(-Fbenthicsel1, -Fdemersalsel1, -Fpelagicsel1) %>% pivot_longer(c(intercept:season2, fishing), names_to = "variable", values_to = "value")
+
+ srho_long%>% filter(variable!="intercept") %>%  
+ggplot(aes(y = abs(value), x=variable, fill = variable)) + geom_boxplot()+ scale_y_continuous(limits = c(0, 5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette)
+
+ srho_long%>% filter(variable!="intercept") %>% filter(specs!="SHRIMP.UNCL") %>%  
+ggplot(aes(y = abs(value), x = depth_profile_pelagic_demersal, fill = variable)) + geom_boxplot()+ scale_y_continuous(limits = c(0, 5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette)
+ 
+ srho_long%>% filter(variable!="intercept") %>% filter(specs!="SHRIMP.UNCL") %>%  
+ggplot(aes(y = abs(value), fill = depth_profile_pelagic_demersal, x = variable)) + geom_boxplot()+ scale_y_continuous(limits = c(0, 5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette)
+
+
+```
+fishing is more important for demersal, but everything is more imporant for demersal  
+
+
+same as above for betas 
+```{r}
+sb <- out[["parameters"]][["betaStandXWmu"]]
+sb <- t(sb)
+
+sb <- as.data.frame(sb)%>% mutate (specs = rownames(sb)) 
+
+
+#match to only show benthic fishing for benthic species 
+spp_class <- read.csv("spp_by_year_selected.csv")
+spp_status <- spp_class %>% dplyr::select(COMNAME, depth_profile_pelagic_demersal)
+spp_status$COMNAME <- gsub(pattern = ' ', replacement = ".", x = spp_status$COMNAME)
+spp_order_sel <- spp_status[spp_status$COMNAME %in% specnames_use,]
+
+sb <- left_join(sb, spp_order_sel, by = c("specs"="COMNAME"))
+sb$Fdemersalsel1[is.na(sb$Fdemersalsel1)] <- 0
+sb$Fpelagicsel1[is.na(sb$Fpelagicsel1)] <- 0
+sb$Fbenthicsel1[is.na(sb$Fbenthicsel1)] <- 0
+
+sb$fishing <- sb$Fbenthicsel1 + sb$Fdemersalsel1 + sb$Fpelagicsel1
+
+sb_long <- as.data.frame(sb) %>% select(-Fbenthicsel1, -Fdemersalsel1, -Fpelagicsel1) %>%
+  pivot_longer(c(depth:season2, fishing), names_to = "variable", values_to = "value")
+ 
+cbPalette2 <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#000000", "#0072B2", "#D55E00", "#CC79A7", "#00ebab","navy")
+
+sb_long%>% filter(variable!="intercept")   %>% filter(variable!="season2") %>% 
+ggplot(aes(y = abs(value), x=variable, fill = variable)) + geom_boxplot()+ scale_y_continuous(limits = c(0, 1))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette2)
+
+ sb_long%>% filter(variable!="intercept")   %>% filter(variable!="season2") %>% filter(specs!="SHRIMP.UNCL") %>%  
+ggplot(aes(y = abs(value), x = depth_profile_pelagic_demersal, fill = variable)) + geom_boxplot()+ scale_y_continuous(limits = c(0, .5))+ theme(axis.text.x = element_text(angle = 90))+scale_fill_manual(values=cbPalette2)
+
+```
+looks like the depth interactions are more important for benthic, whereas sst interactions are more important for pelagic
+
